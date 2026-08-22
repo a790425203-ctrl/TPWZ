@@ -1,0 +1,9 @@
+node_modules/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+.env
+*.log
+
+# 部署包（手动生成，不入库）
+deploy-*.zip
