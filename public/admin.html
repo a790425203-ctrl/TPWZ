@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Meeting room name voting &mdash; Admin</title>
+  <meta name="google" content="notranslate">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body class="notranslate">
+  <div class="ambient">
+    <span></span><span></span><span></span>
+  </div>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 21h18"/><path d="M5 21V8l7-5 7 5v13"/><path d="M9 21V12h6v9"/>
+          </svg>
+        </span>
+        <span class="brand-text">Meeting Room Name Voting</span>
+      </a>
+      <nav class="nav">
+        <a href="/" class="nav-link">Vote</a>
+        <a href="/results" class="nav-link">Public Results</a>
+        <a href="/admin" class="nav-link active">Admin</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- 登录门 -->
+  <main class="container">
+    <section class="admin-gate" id="admin-gate">
+      <div class="admin-card" style="max-width:420px;margin:24px auto 48px;">
+        <h2>Admin Sign-in</h2>
+        <p class="muted">Enter the administrator password to configure the voting activity.</p>
+        <div class="field">
+          <label for="admin-password">Password</label>
+          <input type="password" id="admin-password" placeholder="Enter admin password" autocomplete="current-password">
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-accent" id="admin-login-btn">Sign in</button>
+        </div>
+        <p class="modal-error" id="admin-error"></p>
+      </div>
+    </section>
+
+    <!-- 配置面板 -->
+    <section class="admin-panel" id="admin-panel" hidden>
+      <div class="admin-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px;">
+          <h2>Activity Configuration</h2>
+          <button class="btn btn-ghost btn-sm" id="logout-admin-btn">Sign out</button>
+        </div>
+        <p class="muted">
+          Configure the combined per-theme vote cap, nomination input slots, voting window, and the curated name lists.
+          &nbsp;<strong>Rule:</strong> each theme accepts up to <em>total_meeting_rooms</em> names (preset selections + nominations combined).
+        </p>
+
+        <div class="form-grid">
+          <div class="field full">
+            <label for="f-title">Site title</label>
+            <input type="text" id="f-title" maxlength="120">
+          </div>
+
+          <div class="field">
+            <label for="f-rooms">Total meeting rooms (per-theme cap)</label>
+            <input type="number" id="f-rooms" min="1" max="50">
+            <div class="hint">Each voter may submit at most this many names per theme (presets + nominations combined).</div>
+          </div>
+
+          <div class="field">
+            <label for="f-maxinputs">Nomination input slots</label>
+            <input type="number" id="f-maxinputs" min="1" max="10">
+            <div class="hint">Number of text boxes provided for personal nominations. Valid nominations are still capped by the per-theme cap.</div>
+          </div>
+
+          <div class="field">
+            <label for="f-start">Voting opens at</label>
+            <input type="datetime-local" id="f-start">
+          </div>
+
+          <div class="field">
+            <label for="f-end">Voting closes at</label>
+            <input type="datetime-local" id="f-end">
+          </div>
+
+          <div class="field full">
+            <label for="f-galaxy">Galaxy curated names (one per line)</label>
+            <textarea id="f-galaxy" spellcheck="false"></textarea>
+            <div class="hint">Voters may select up to the cap from these. Empty lines are ignored.</div>
+          </div>
+
+          <div class="field full">
+            <label for="f-landscape">Natural Landscape curated names (one per line)</label>
+            <textarea id="f-landscape" spellcheck="false"></textarea>
+            <div class="hint">No geographic place names should appear here.</div>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <p class="modal-error" id="save-error" style="margin-right:auto;"></p>
+          <button class="btn btn-primary" id="save-btn">
+            <svg class="btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4L19 7"/></svg>
+            Save configuration
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 用户管理与数据清理 -->
+    <section class="admin-panel" id="admin-data" hidden>
+      <div class="admin-card">
+        <h2>User Management &amp; Data Cleanup</h2>
+        <p class="muted">
+          Remove a malicious voter or clear all test data. Deleting a user also removes their theme choice and name votes.
+          Clearing all votes resets every tally to zero (the activity configuration is kept).
+        </p>
+
+        <div class="danger-zone">
+          <div class="danger-head">
+            <h3>Clear all votes &amp; test data</h3>
+            <button class="btn btn-danger" id="clear-all-btn">Clear everything</button>
+          </div>
+          <p class="danger-note">This permanently deletes all users, theme choices and name votes, and resets the ranking to the curated names. The activity settings (rooms, names, schedule) stay intact.</p>
+        </div>
+
+        <h3 class="users-title">Voters <span id="user-count" class="count-pill">0</span></h3>
+        <div class="user-list" id="user-list">
+          <p class="muted" id="user-empty">No voters yet.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container" style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <span>&copy; Staff Voting Portal</span>
+      <span><a href="/">Back to voting &larr;</a></span>
+    </div>
+  </footer>
+
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/fx-ripple.js"></script>
+  <script src="/js/admin.js"></script>
+</body>
+</html>

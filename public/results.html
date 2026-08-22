@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Meeting room name voting &mdash; Public Results</title>
+  <meta name="description" content="Public rankings and full Voting Ledger for the Galaxy and Natural Landscape meeting room name voting themes.">
+  <meta name="google" content="notranslate">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/styles.css?v=12">
+</head>
+<body class="notranslate">
+  <div class="ambient">
+    <span></span><span></span><span></span>
+  </div>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 21h18"/><path d="M5 21V8l7-5 7 5v13"/><path d="M9 21V12h6v9"/>
+          </svg>
+        </span>
+        <span class="brand-text">Meeting Room Name Voting</span>
+      </a>
+      <nav class="nav">
+        <a href="/" class="nav-link">Vote</a>
+        <a href="/results" class="nav-link active">Public Results</a>
+        <a href="/admin" class="nav-link">Admin</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- 公示页 hero：使用更浓烈的流动背景 + 主题插画 -->
+  <section class="hero hero--results" style="min-height:280px;">
+    <div class="hero-bg"></div>
+    <div class="hero-flow hero-flow--vivid"></div>
+    <div class="hero-overlay hero-overlay--light"></div>
+    <div class="hero-content container">
+      <div class="hero-illustration" aria-hidden="true">
+        <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <radialGradient id="resGlow" cx="0.5" cy="0.5" r="0.5">
+              <stop offset="0" stop-color="#D4A84B" stop-opacity="0.45"/>
+              <stop offset="0.55" stop-color="#8B5CF6" stop-opacity="0.18"/>
+              <stop offset="1" stop-color="#8B5CF6" stop-opacity="0"/>
+            </radialGradient>
+            <linearGradient id="resOrb" x1="0" y1="0" x2="200" y2="200" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#8B5CF6"/>
+              <stop offset="0.5" stop-color="#1AA39E"/>
+              <stop offset="1" stop-color="#10B981"/>
+            </linearGradient>
+            <linearGradient id="resRing" x1="0" y1="0" x2="200" y2="200" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#D4A84B" stop-opacity="0.9"/>
+              <stop offset="1" stop-color="#D4A84B" stop-opacity="0"/>
+            </linearGradient>
+            <linearGradient id="resBar1" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#D4A84B" stop-opacity="0.85"/>
+              <stop offset="1" stop-color="#D4A84B" stop-opacity="0.35"/>
+            </linearGradient>
+            <linearGradient id="resBar2" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#A5B4FC" stop-opacity="0.7"/>
+              <stop offset="1" stop-color="#A5B4FC" stop-opacity="0.25"/>
+            </linearGradient>
+          </defs>
+          <!-- 光晕背景 -->
+          <circle cx="100" cy="100" r="96" fill="url(#resGlow)" opacity="0.7">
+            <animate attributeName="r" values="96;102;96" dur="6s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0.7;0.45;0.7" dur="6s" repeatCount="indefinite"/>
+          </circle>
+          <!-- 外环 -->
+          <circle cx="100" cy="100" r="92" stroke="url(#resRing)" stroke-width="2" stroke-dasharray="10 8" opacity="0.75">
+            <animateTransform attributeName="transform" type="rotate" from="0 100 100" to="360 100 100" dur="40s" repeatCount="indefinite"/>
+          </circle>
+          <!-- 星球主体 -->
+          <circle cx="100" cy="100" r="68" fill="url(#resOrb)" fill-opacity="0.22" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"/>
+          <!-- 星球表面纹理 -->
+          <path d="M45 110c15-8 32-5 50-15s30-22 45-19" stroke="rgba(255,255,255,0.26)" stroke-width="2.5" stroke-linecap="round"/>
+          <path d="M55 135c18-5 38-2 55-12s25-20 40-22" stroke="rgba(255,255,255,0.18)" stroke-width="2.5" stroke-linecap="round"/>
+          <!-- 小星星 -->
+          <circle cx="38" cy="55" r="3" fill="#F0C97A"><animate attributeName="opacity" values="0.5;1;0.5" dur="3s" repeatCount="indefinite"/></circle>
+          <circle cx="160" cy="42" r="2.5" fill="#A5B4FC"><animate attributeName="opacity" values="0.4;1;0.4" dur="2.4s" repeatCount="indefinite"/></circle>
+          <circle cx="170" cy="142" r="3" fill="#6EE7B7"><animate attributeName="opacity" values="0.5;1;0.5" dur="2.8s" repeatCount="indefinite"/></circle>
+          <circle cx="55" cy="165" r="2.5" fill="#F0C97A"><animate attributeName="opacity" values="0.4;1;0.4" dur="3.2s" repeatCount="indefinite"/></circle>
+          <circle cx="20" cy="115" r="2" fill="#fff"><animate attributeName="opacity" values="0.3;0.9;0.3" dur="2.6s" repeatCount="indefinite"/></circle>
+          <circle cx="185" cy="95" r="2" fill="#fff"><animate attributeName="opacity" values="0.3;0.9;0.3" dur="2.2s" repeatCount="indefinite"/></circle>
+          <!-- 柱状图装饰 -->
+          <rect x="80" y="68" width="14" height="58" rx="4" fill="url(#resBar1)"/>
+          <rect x="98" y="88" width="14" height="38" rx="4" fill="url(#resBar2)"/>
+          <rect x="116" y="78" width="14" height="48" rx="4" fill="url(#resBar1)" opacity="0.7"/>
+        </svg>
+      </div>
+      <span class="hero-eyebrow">Transparency &middot; Open to Everyone</span>
+      <h1>Public Results</h1>
+      <p>
+        Rankings and the complete Voting Ledger are open to all &mdash; no sign-in required.
+        Galaxy and Natural Landscape run as fully independent competitions with isolated datasets.
+      </p>
+      <div class="hero-divider"></div>
+    </div>
+  </section>
+
+  <main class="container">
+    <section class="theme-stats glass" id="theme-stats" aria-label="Theme choice statistics"></section>
+
+    <section class="closing-notice" id="closing-notice"></section>
+
+    <div class="results-stack">
+      <section class="results-block galaxy" id="galaxy-block"></section>
+      <section class="results-block landscape" id="landscape-block"></section>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container" style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <span>&copy; Staff Voting Portal</span>
+      <span><a href="/">Back to voting &larr;</a></span>
+    </div>
+  </footer>
+
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="/js/api.js?v=12"></script>
+  <script src="/js/fx-ripple.js?v=12"></script>
+  <script src="/js/results.js?v=12"></script>
+</body>
+</html>
