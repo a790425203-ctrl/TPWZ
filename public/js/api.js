@@ -42,7 +42,8 @@ window.Api = (function () {
 
   return {
     getToken, getUser, setSession, clearSession, request,
-    login: (fullname) => request('POST', '/api/auth/login', { fullname }),
+    login: (fullname, anonToken) => request('POST', '/api/auth/login', fullname ? { fullname } : { anon_token: anonToken }),
+    setMyName: (fullname) => request('PUT', '/api/auth/name', { fullname }),
     adminLogin: (password) => request('POST', '/api/auth/admin-login', { password }),
     adminCheck: (token) => request('GET', '/api/auth/admin-check', null, token),
     me: () => request('GET', '/api/auth/me'),

@@ -17,6 +17,7 @@ const state = {
   activity: null,
   stats: { total: 0, galaxy: { count: 0, percent: 0 }, landscape: { count: 0, percent: 0 } },
   user: Api.getUser(),
+  anonToken: localStorage.getItem('mrv_anon_token') || '',
   choice: null,       // { user_id, chosen_theme, ... }
   myVote: null,       // 当前主题的名字投票
   hasVoted: false,    // 是否已在该主题投过名字票（锁定主题切换）
@@ -50,19 +51,37 @@ function showToast(msg, type) {
 
 function renderIdentity() {
   const bar = document.getElementById('identity-bar');
-  if (state.user) {
+  if (!state.user) {
+    bar.innerHTML = '<span class="identity-who">Connecting…</span>';
+    return;
+  }
+  const isAnon = /^Guest-/.test(state.user.fullname);
+  if (isAnon) {
+    bar.innerHTML =
+      '<span class="identity-who">Voting as <strong>' + esc(state.user.fullname) + '</strong></span>' +
+      '<button class="btn btn-ghost btn-sm" id="setname-btn">Set my name</button>';
+    bar.querySelector('#setname-btn').addEventListener('click', openSetName);
+  } else {
     bar.innerHTML =
       '<span class="identity-who">Voting as <strong>' + esc(state.user.fullname) + '</strong></span>' +
       '<button class="btn btn-ghost btn-sm" id="logout-btn">Sign out</button>';
     bar.querySelector('#logout-btn').addEventListener('click', () => {
-      Api.clearSession(); state.user = null; state.choice = null; state.myVote = null; location.reload();
+      Api.clearSession(); localStorage.removeItem('mrv_anon_token'); location.reload();
     });
-  } else {
-    bar.innerHTML =
-      '<span class="identity-who">You are not signed in.</span>' +
-      '<button class="btn btn-primary btn-sm" id="login-btn">Sign in to vote</button>';
-    bar.querySelector('#login-btn').addEventListener('click', openLogin);
   }
+}
+
+function openSetName() {
+  const name = window.prompt('Enter your name (optional — you can keep voting anonymously):', '');
+  if (name === null) return; // 取消
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  Api.setMyName(trimmed).then((res) => {
+    Api.setSession(res.token, res.user);
+    state.user = res.user;
+    renderIdentity();
+    showToast('Name updated to ' + trimmed + '.', 'success');
+  }).catch((e) => showToast(e.message, 'error'));
 }
 
 function renderBanner() {
@@ -247,9 +266,11 @@ async function onSave(theme) {
     const res = await Api.saveVote(theme, selected, noms);
     state.myVote = res.vote;
     state.hasVoted = true;
-    renderActiveThemeCard(theme);
-    showVotingView(theme); // 刷新锁定状态（隐藏 Change theme）
-    showToast(THEME_LABELS[theme] + ' vote saved. Your theme is now locked.', 'success');
+    // 记住用户主题偏好，结果页据此优先展示对应排行榜
+    try { localStorage.setItem('mrv_chosen_theme', theme); } catch {}
+    showToast(THEME_LABELS[theme] + ' vote saved. Taking you to the results…', 'success');
+    // 投完票自动跳转公开结果页
+    setTimeout(() => { window.location.href = '/results'; }, 900);
   } catch (e) {
     errBox.textContent = e.message;
     showToast(e.message, 'error');
@@ -262,10 +283,10 @@ async function chooseTheme(theme) {
     showToast('You have already voted in the ' + THEME_LABELS[state.choice ? state.choice.chosen_theme : theme] + ' theme. Each person may vote only once.', 'error');
     return;
   }
+  // 免注册：未登录用户以匿名身份自动投票（init 已确保 state.user 存在）
   if (!state.user) {
-    state.pendingTheme = theme;
-    openLogin();
-    return;
+    showToast('Preparing your voting session…', 'info');
+    await ensureAnonymous();
   }
   try {
     const res = await Api.saveThemeChoice(theme);
@@ -297,6 +318,8 @@ async function submitLogin() {
   const errEl = document.getElementById('login-error');
   if (!name) { errEl.textContent = 'Please enter your full name.'; return; }
   try {
+    // 若此前是匿名身份，改用实名登录（会新建实名账号，旧匿名票不迁移）
+    localStorage.removeItem('mrv_anon_token');
     const res = await Api.login(name);
     Api.setSession(res.token, res.user);
     state.user = res.user;
@@ -350,6 +373,26 @@ async function loadUserState() {
   state.hasVoted = !!state.myVote;
 }
 
+/** 免注册：确保当前浏览器有一个稳定的匿名投票身份（Guest-XXXX） */
+async function ensureAnonymous() {
+  if (state.user) return state.user;
+  if (!state.anonToken) {
+    state.anonToken = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now());
+    try { localStorage.setItem('mrv_anon_token', state.anonToken); } catch {}
+  }
+  try {
+    const res = await Api.login('', state.anonToken);
+    Api.setSession(res.token, res.user);
+    state.user = res.user;
+    state.anonToken = res.anon_token || state.anonToken;
+    try { localStorage.setItem('mrv_anon_token', state.anonToken); } catch {}
+    renderIdentity();
+  } catch (e) {
+    showToast('Could not start voting session: ' + e.message, 'error');
+  }
+  return state.user;
+}
+
 async function init() {
   try {
     state.activity = await Api.getActivity();
@@ -360,6 +403,10 @@ async function init() {
     return;
   }
 
+  // 免注册：无登录态的用户自动获得匿名身份，无需弹窗
+  if (!state.user) {
+    await ensureAnonymous();
+  }
   if (state.user) {
     await loadUserState();
   }

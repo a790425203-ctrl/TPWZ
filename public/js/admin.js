@@ -134,6 +134,31 @@ async function clearAll() {
   }
 }
 
+/** 导出投票数据 CSV：用管理员令牌请求后端，触发浏览器下载（含 UTF-8 BOM） */
+async function exportCsv() {
+  try {
+    const token = adminToken();
+    const res = await fetch('/api/admin/export', { headers: { Authorization: 'Bearer ' + token } });
+    if (!res.ok) {
+      if (res.status === 401) { localStorage.removeItem(ADMIN_TOKEN_KEY); showGate(); }
+      throw new Error('Export failed (' + res.status + ').');
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const fname = 'voting-data-' + new Date().toISOString().slice(0, 10) + '.csv';
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast('CSV exported.', 'success');
+  } catch (e) {
+    showToast(e.message, 'error');
+  }
+}
+
 document.getElementById('admin-login-btn').addEventListener('click', async () => {
   const pw = document.getElementById('admin-password').value;
   const errEl = document.getElementById('admin-error');
@@ -176,6 +201,7 @@ document.getElementById('logout-admin-btn').addEventListener('click', () => {
 });
 
 document.getElementById('clear-all-btn').addEventListener('click', clearAll);
+document.getElementById('export-csv-btn').addEventListener('click', exportCsv);
 document.getElementById('user-list').addEventListener('click', (e) => {
   const btn = e.target.closest('[data-role="del-user"]');
   if (!btn) return;

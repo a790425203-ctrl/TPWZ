@@ -38,8 +38,10 @@ function verify(token) {
   }
 }
 
-function issueUserToken(user) {
-  return sign({ user_id: user.user_id, fullname: user.fullname, exp: Date.now() + TOKEN_TTL_MS });
+function issueUserToken(user, anonToken) {
+  const payload = { user_id: user.user_id, fullname: user.fullname, exp: Date.now() + TOKEN_TTL_MS };
+  if (anonToken) payload.anon_token = anonToken;
+  return sign(payload);
 }
 
 function issueAdminToken() {

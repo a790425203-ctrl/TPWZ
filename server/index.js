@@ -165,9 +165,31 @@ async function handleApi(req, res, pathname, method) {
     if (pathname === '/api/auth/login' && method === 'POST') {
       const body = await readBody(req);
       const fullname = String(body.fullname || '').trim();
-      if (!fullname) return sendJson(res, 400, { error: 'Full name is required. Anonymous voting is not allowed.' });
+      // 免注册：未提供姓名时自动分配匿名身份（Guest-XXXX），同一浏览器复用同一令牌
+      if (!fullname) {
+        const anonToken = String(body.anon_token || '').trim() || crypto.randomUUID();
+        const user = db.getOrCreateAnonymousUser(anonToken);
+        const token = auth.issueUserToken(user, anonToken);
+        return sendJson(res, 200, { token, user, anonymous: true, anon_token: anonToken });
+      }
       const user = db.getOrCreateUser(fullname);
       return sendJson(res, 200, { token: auth.issueUserToken(user), user });
+    }
+
+    // 匿名用户设置真实显示名（不改变 user_id，保留已投票记录）
+    if (pathname === '/api/auth/name' && method === 'PUT') {
+      const user = auth.requireUser(req);
+      if (!user) return sendJson(res, 401, { error: 'Sign in required.' });
+      const body = await readBody(req);
+      const newName = String(body.fullname || '').trim();
+      if (!newName) return sendJson(res, 400, { error: 'Name is required.' });
+      let updated;
+      try {
+        updated = db.renameAnonymousUser(user.anon_token || (user.user_id.startsWith('anon_') ? user.user_id.slice(5) : ''), newName);
+      } catch (e) {
+        return sendJson(res, 400, { error: e.message });
+      }
+      return sendJson(res, 200, { token: auth.issueUserToken(updated, user.anon_token), user: updated });
     }
 
     if (pathname === '/api/auth/admin-login' && method === 'POST') {
@@ -330,6 +352,19 @@ async function handleApi(req, res, pathname, method) {
         stats: db.getThemeChoiceStats(),
         results: buildResultsPayload(),
       });
+    }
+
+    // 管理员导出投票数据（CSV 下载）
+    if (pathname === '/api/admin/export' && method === 'GET') {
+      if (!auth.requireAdmin(req)) return sendJson(res, 401, { error: 'Admin access required.' });
+      const csv = db.exportVotesCsv();
+      const fname = 'voting-data-' + new Date().toISOString().slice(0, 10) + '.csv';
+      res.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': 'attachment; filename="' + fname + '"',
+        'Cache-Control': 'no-store',
+      });
+      return res.end('﻿' + csv); // ﻿ = BOM，Excel 正确识别 UTF-8
     }
 
     if (pathname === '/api/results' && method === 'GET') {

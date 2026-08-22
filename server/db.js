@@ -194,6 +194,37 @@ function getOrCreateUser(fullname) {
   return { user_id: userId, fullname: name };
 }
 
+/**
+ * 匿名自动命名：用户不填姓名时，服务器分配一个稳定的 Guest 身份。
+ * 在浏览器本地生成一个匿名令牌（随机 UUID），同一浏览器始终复用同一身份，
+ * 从而满足"一人一票"的隔离要求，同时免去注册/输名字的门槛。
+ */
+function getOrCreateAnonymousUser(anonToken) {
+  const token = String(anonToken || '').trim() || crypto.randomUUID();
+  const name = 'Guest-' + token.slice(0, 6).toUpperCase();
+  // 匿名身份按 user_id = 'anon_' + token 持久化，保证刷新后仍是同一人
+  const userId = 'anon_' + token;
+  const existing = db.prepare('SELECT * FROM app_user WHERE user_id = ?').get(userId);
+  if (existing) return { user_id: existing.user_id, fullname: existing.fullname };
+  db.prepare('INSERT INTO app_user (user_id, fullname) VALUES (?, ?)').run(userId, name);
+  return { user_id: userId, fullname: name };
+}
+
+/**
+ * 匿名用户可选"设置真实名字"：只更新显示名，不改变 user_id，
+ * 因此已投的票与一人一票限制都保持不变。
+ */
+function renameAnonymousUser(anonToken, newName) {
+  const token = String(anonToken || '').trim();
+  const name = String(newName || '').trim();
+  if (!token || !name) throw new Error('Token and name are required.');
+  const userId = 'anon_' + token;
+  const user = db.prepare('SELECT * FROM app_user WHERE user_id = ?').get(userId);
+  if (!user) throw new Error('Anonymous session not found.');
+  db.prepare('UPDATE app_user SET fullname = ? WHERE user_id = ?').run(name, userId);
+  return { user_id: userId, fullname: name };
+}
+
 /* ---------------- 主题选择（每人只能选一个主题） ---------------- */
 
 function getThemeChoice(userId) {
@@ -366,6 +397,67 @@ function deleteUserByFullname(fullname) {
 }
 
 /**
+ * 导出全部投票数据为 CSV 字符串（管理员用）。
+ * 包含：每个投票用户的姓名、所选主题、该主题的勾选预设名、个人提名、提交时间；
+ * 以及两个主题的聚合榜单（名称、来源、票数）。
+ */
+function csvCell(v) {
+  const s = String(v == null ? '' : v);
+  if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+function exportVotesCsv() {
+  const activity = getActivity();
+  const themeChoice = getThemeChoiceStats();
+  const lines = [];
+
+  // 区块一：主题选择统计
+  lines.push('=== THEME CHOICE SUMMARY ===');
+  lines.push(['Theme', 'Voters', 'Percent'].map(csvCell).join(','));
+  lines.push([csvCell('Galaxy'), themeChoice.galaxy.count, themeChoice.galaxy.percent + '%'].join(','));
+  lines.push([csvCell('Natural Landscape'), themeChoice.landscape.count, themeChoice.landscape.percent + '%'].join(','));
+  lines.push([csvCell('Total'), themeChoice.total, ''].join(','));
+  lines.push('');
+
+  // 区块二：逐票明细
+  lines.push('=== VOTE DETAILS ===');
+  lines.push(['Voter Name', 'Chosen Theme', 'Selected Preset Names', 'Nominated Names', 'Submitted At'].map(csvCell).join(','));
+  const detailRows = db.prepare(`
+    SELECT u.fullname AS name, tc.chosen_theme AS theme, v.selected_preset_names, v.user_nominated_names, v.last_modified_time
+    FROM app_user u
+    LEFT JOIN user_theme_vote v ON v.user_id = u.user_id
+    LEFT JOIN user_theme_choice tc ON tc.user_id = u.user_id
+    WHERE v.user_id IS NOT NULL
+    ORDER BY v.last_modified_time ASC
+  `).all();
+  for (const r of detailRows) {
+    const theme = r.theme === 'galaxy' ? 'Galaxy' : (r.theme === 'landscape' ? 'Natural Landscape' : r.theme || '');
+    const sel = (JSON.parse(r.selected_preset_names || '[]')).join(' | ');
+    const nom = (JSON.parse(r.user_nominated_names || '[]')).join(' | ');
+    lines.push([csvCell(r.name), csvCell(theme), csvCell(sel), csvCell(nom), csvCell(r.last_modified_time)].join(','));
+  }
+  lines.push('');
+
+  // 区块三：聚合榜单（Galaxy）
+  lines.push('=== GALAXY RANKING ===');
+  lines.push(['Name', 'Source', 'Votes', 'Voters', 'Nominators'].map(csvCell).join(','));
+  for (const e of getAggregation('Galaxy')) {
+    lines.push([csvCell(e.name), csvCell(e.source), e.total_votes, csvCell(e.voters.join(' | ')), csvCell(e.nominators.join(' | '))].join(','));
+  }
+  lines.push('');
+
+  // 区块四：聚合榜单（Natural Landscape）
+  lines.push('=== NATURAL LANDSCAPE RANKING ===');
+  lines.push(['Name', 'Source', 'Votes', 'Voters', 'Nominators'].map(csvCell).join(','));
+  for (const e of getAggregation('NaturalLandscape')) {
+    lines.push([csvCell(e.name), csvCell(e.source), e.total_votes, csvCell(e.voters.join(' | ')), csvCell(e.nominators.join(' | '))].join(','));
+  }
+
+  return lines.join('\r\n');
+}
+
+/**
  * 清空所有投票与测试数据（保留活动配置 voting_activity 不变）：
  * 删除 app_user / user_theme_choice / user_theme_vote，
  * 并把 aggregated_name_result 重置为仅含预设名称、0 票的初始状态。
@@ -389,6 +481,9 @@ module.exports = {
   getActivity,
   updateActivity,
   getOrCreateUser,
+  getOrCreateAnonymousUser,
+  renameAnonymousUser,
+  exportVotesCsv,
   getThemeChoice,
   upsertThemeChoice,
   hasVotedAnyTheme,
