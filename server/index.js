@@ -70,6 +70,20 @@ function readBody(req) {
 }
 
 /**
+ * 提取客户端真实 IP。
+ * 部署在 Render 等反向代理之后时，真实 IP 在 X-Forwarded-For 首列；
+ * 本地直连时回退到 socket 地址。该值用于"每个 IP 只能投一次票"的防重复校验。
+ */
+function getClientIp(req) {
+  const xff = req.headers['x-forwarded-for'];
+  if (xff) {
+    const first = String(xff).split(',')[0].trim();
+    if (first) return first;
+  }
+  return req.socket.remoteAddress || '';
+}
+
+/**
  * 校验并规范化"勾选的预设候选"。
  * 限制：最多 combinedCap 条（每个用户在该主题的"勾选 + 提名"总数上限）。
  */
@@ -165,14 +179,15 @@ async function handleApi(req, res, pathname, method) {
     if (pathname === '/api/auth/login' && method === 'POST') {
       const body = await readBody(req);
       const fullname = String(body.fullname || '').trim();
+      const ip = getClientIp(req);
       // 免注册：未提供姓名时自动分配匿名身份（Guest-XXXX），同一浏览器复用同一令牌
       if (!fullname) {
         const anonToken = String(body.anon_token || '').trim() || crypto.randomUUID();
-        const user = db.getOrCreateAnonymousUser(anonToken);
+        const user = db.getOrCreateAnonymousUser(anonToken, ip);
         const token = auth.issueUserToken(user, anonToken);
         return sendJson(res, 200, { token, user, anonymous: true, anon_token: anonToken });
       }
-      const user = db.getOrCreateUser(fullname);
+      const user = db.getOrCreateUser(fullname, ip);
       return sendJson(res, 200, { token: auth.issueUserToken(user), user });
     }
 
@@ -185,7 +200,7 @@ async function handleApi(req, res, pathname, method) {
       if (!newName) return sendJson(res, 400, { error: 'Name is required.' });
       let updated;
       try {
-        updated = db.renameAnonymousUser(user.anon_token || (user.user_id.startsWith('anon_') ? user.user_id.slice(5) : ''), newName);
+        updated = db.renameAnonymousUser(user.anon_token || (user.user_id.startsWith('anon_') ? user.user_id.slice(5) : ''), newName, getClientIp(req));
       } catch (e) {
         return sendJson(res, 400, { error: e.message });
       }
@@ -241,6 +256,10 @@ async function handleApi(req, res, pathname, method) {
       if (theme !== 'galaxy' && theme !== 'landscape') {
         return sendJson(res, 400, { error: 'Theme must be galaxy or landscape.' });
       }
+      // 每个 IP 只能投一次票：若此 IP 已被其他身份投过票，直接拒绝（防止清缓存重复投票）
+      if (db.hasIpVotedExcept(getClientIp(req), user.user_id)) {
+        return sendJson(res, 403, { error: 'This device / IP has already submitted a vote. Each person may vote only once.' });
+      }
       // 一人一票：只要用户已在任主题投过名，就不允许再选/改选其他主题
       let choice;
       try {
@@ -278,6 +297,13 @@ async function handleApi(req, res, pathname, method) {
       const activity = db.getActivity();
       if (activity.status !== 'VotingOpen') {
         return sendJson(res, 403, { error: 'Voting is not open at the moment.' });
+      }
+
+      // 每个 IP 只能投一次票：记录来源 IP 后，若该 IP 已被其他身份投过票则拒绝
+      const ip = getClientIp(req);
+      db.setUserIp(user.user_id, ip);
+      if (db.hasIpVotedExcept(ip, user.user_id)) {
+        return sendJson(res, 403, { error: 'This device / IP has already submitted a vote. Each person may vote only once.' });
       }
 
       // 每人只能投一个主题：必须先选主题，且只能投已选主题
@@ -346,12 +372,17 @@ async function handleApi(req, res, pathname, method) {
 
     if (pathname === '/api/admin/clear' && method === 'POST') {
       if (!auth.requireAdmin(req)) return sendJson(res, 401, { error: 'Admin access required.' });
-      db.clearAllVotes();
-      return sendJson(res, 200, {
-        cleared: true,
-        stats: db.getThemeChoiceStats(),
-        results: buildResultsPayload(),
-      });
+      try {
+        db.clearAllVotes();
+        return sendJson(res, 200, {
+          cleared: true,
+          stats: db.getThemeChoiceStats(),
+          results: buildResultsPayload(),
+        });
+      } catch (e) {
+        console.error('[admin/clear] error:', e);
+        return sendJson(res, 500, { error: 'Failed to clear votes: ' + e.message });
+      }
     }
 
     // 管理员导出投票数据（CSV 下载）
@@ -383,8 +414,13 @@ async function handleApi(req, res, pathname, method) {
 function serveStatic(req, res, pathname) {
   let rel = pathname;
   if (rel === '/' || rel === '/index') rel = '/index.html';
-  else if (rel === '/results') rel = '/results.html';
   else if (rel === '/admin') rel = '/admin.html';
+  // v16：公示页已合并到首页（#results-anchor），/results 跳转到首页锚点
+  if (rel === '/results' || rel === '/results.html') {
+    res.writeHead(302, { Location: '/#results-anchor' });
+    res.end();
+    return;
+  }
 
   let resolved;
   try {
@@ -430,9 +466,18 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, HOST, () => {
   console.log('');
   console.log('  Meeting room name voting — server running');
-  console.log(`  Vote:    http://localhost:${PORT}/`);
-  console.log(`  Results: http://localhost:${PORT}/results`);
+  console.log(`  Vote + Live Results: http://localhost:${PORT}/`);
   console.log(`  Admin:   http://localhost:${PORT}/admin`);
   console.log(`  Admin password (default): ${auth.ADMIN_PASSWORD}`);
   console.log('');
+
+  // 生产环境安全自检：默认凭据未覆盖时给出明确告警
+  if (process.env.NODE_ENV === 'production') {
+    if (!process.env.ADMIN_PASSWORD) {
+      console.warn('[SECURITY WARNING] ADMIN_PASSWORD 仍是默认值。请在 Render 环境变量中设置强密码，否则他人可能进入管理后台。');
+    }
+    if (!process.env.SESSION_SECRET) {
+      console.warn('[SECURITY WARNING] SESSION_SECRET 未设置。令牌签名密钥为公开默认值，攻击者可伪造管理员令牌。请在 Render 环境变量中设置强随机值。');
+    }
+  }
 });

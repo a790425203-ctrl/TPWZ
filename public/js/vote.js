@@ -1,9 +1,17 @@
 'use strict';
 
-/* 首页两步投票逻辑
-   第 1 步：每人选择一个主题（galaxy / landscape），首页实时显示比例。
-   第 2 步：在已选主题内投票，最多选 total_meeting_rooms 个名字（预设 + 提名）。
-   切换主题会自动清除另一主题的投票记录。
+/* v26：左 sidebar 为完整投票面板（顶部 Voting Guide + Step1 主题选择 + 选完才跳出的 Step2 投票卡），
+   右 main 为 Results Dashboard（两主题合并成 100% 能量条 + 双列排行榜：Galaxy 列 + Landscape 列）。
+
+   行为：
+   - 左侧顶部：Voting Guide 引导用户如何投票
+   - Step 1：主题 tabs；点击主题后才出现 Step 2 投票卡
+   - 已投票用户加载后直接跳到已选主题，卡片自动显示
+   - 右侧：Results Dashboard 始终展示实时能量条与 Galaxy / Landscape 双列排行榜
+   - 未投票：左侧 tab 自由切换，右侧投票卡跟随主题变化
+   - 已投票：activeTheme 锁定为用户所选主题，禁用另一 tab
+   - 投票保存后：保持当前 tab，自动刷新右侧 Results Dashboard
+   - 能量条每 15s、结果每 30s 自动刷新
 */
 
 const THEME_ICONS = {
@@ -16,13 +24,15 @@ const THEME_LABELS = { galaxy: 'Galaxy', landscape: 'Natural Landscape' };
 const state = {
   activity: null,
   stats: { total: 0, galaxy: { count: 0, percent: 0 }, landscape: { count: 0, percent: 0 } },
+  results: { galaxy: { ranking: [], submissions: [] }, landscape: { ranking: [], submissions: [] } },
   user: Api.getUser(),
   anonToken: localStorage.getItem('mrv_anon_token') || '',
-  choice: null,       // { user_id, chosen_theme, ... }
-  myVote: null,       // 当前主题的名字投票
-  hasVoted: false,    // 是否已在该主题投过名字票（锁定主题切换）
+  choice: null,         // { user_id, chosen_theme, ... }
+  myVotes: { galaxy: null, landscape: null },
+  hasVoted: false,      // 任意主题投过名字票即 true
+  activeTheme: null,     // 当前选中的主题（null = 尚未选择，未投票用户初始不显示投票卡）
   cap: 7,
-  pendingTheme: null, // 未登录用户点击的主题
+  timers: { themeStats: null, results: null },
 };
 
 function esc(s) {
@@ -49,8 +59,11 @@ function showToast(msg, type) {
   setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 3500);
 }
 
+/* ============== Identity ============== */
+
 function renderIdentity() {
   const bar = document.getElementById('identity-bar');
+  if (!bar) return;
   if (!state.user) {
     bar.innerHTML = '<span class="identity-who">Connecting…</span>';
     return;
@@ -60,12 +73,14 @@ function renderIdentity() {
     bar.innerHTML =
       '<span class="identity-who">Voting as <strong>' + esc(state.user.fullname) + '</strong></span>' +
       '<button class="btn btn-ghost btn-sm" id="setname-btn">Set my name</button>';
-    bar.querySelector('#setname-btn').addEventListener('click', openSetName);
+    const b = bar.querySelector('#setname-btn');
+    if (b) b.addEventListener('click', openSetName);
   } else {
     bar.innerHTML =
       '<span class="identity-who">Voting as <strong>' + esc(state.user.fullname) + '</strong></span>' +
       '<button class="btn btn-ghost btn-sm" id="logout-btn">Sign out</button>';
-    bar.querySelector('#logout-btn').addEventListener('click', () => {
+    const b = bar.querySelector('#logout-btn');
+    if (b) b.addEventListener('click', () => {
       Api.clearSession(); localStorage.removeItem('mrv_anon_token'); location.reload();
     });
   }
@@ -73,7 +88,7 @@ function renderIdentity() {
 
 function openSetName() {
   const name = window.prompt('Enter your name (optional — you can keep voting anonymously):', '');
-  if (name === null) return; // 取消
+  if (name === null) return;
   const trimmed = name.trim();
   if (!trimmed) return;
   Api.setMyName(trimmed).then((res) => {
@@ -86,6 +101,7 @@ function openSetName() {
 
 function renderBanner() {
   const el = document.getElementById('activity-banner');
+  if (!el) return;
   const s = state.activity.status;
   if (s === 'VotingOpen') { el.innerHTML = ''; return; }
   const msg = s === 'NotStarted'
@@ -94,71 +110,139 @@ function renderBanner() {
   el.innerHTML = '<div class="banner ' + (s === 'NotStarted' ? 'banner-warn' : 'banner-closed') + '">' + esc(msg) + '</div>';
 }
 
-function updateStatsUI() {
+/* ============== Sidebar: Tabs / Energy / Ranking ============== */
+
+function renderSidebar() {
+  renderTabs();
+  renderEnergy();
+  renderRanking();
+  renderStep2();
+}
+
+function renderTabs() {
+  // 已投票：另一 tab disabled
+  const myChosen = state.choice ? state.choice.chosen_theme : null;
+  ['galaxy', 'landscape'].forEach((t) => {
+    const tab = document.getElementById('tab-' + t);
+    if (!tab) return;
+    const isActive = state.activeTheme === t;
+    tab.classList.toggle('active', isActive);
+    tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    // 锁定逻辑：已投票且不是用户主题 → disabled
+    if (state.hasVoted && myChosen && myChosen !== t) {
+      tab.classList.add('disabled');
+      tab.disabled = true;
+    } else {
+      tab.classList.remove('disabled');
+      tab.disabled = false;
+    }
+    // tab meta 文本
+    const meta = document.getElementById('tab-meta-' + t);
+    if (meta) {
+      const s = state.stats[t];
+      meta.textContent = s.count + ' vote' + (s.count === 1 ? '' : 's') + ' · ' + s.percent + '%';
+    }
+  });
+}
+
+// 控制 Step2 投票卡显示/隐藏
+function renderStep2() {
+  const wrap = document.getElementById('step2-wrap');
+  const hint = document.getElementById('step1-hint');
+  if (!wrap || !hint) return;
+  const show = !!state.activeTheme;
+  wrap.classList.toggle('hidden', !show);
+  hint.classList.toggle('hidden', show);
+}
+
+// 渲染两主题合并的 100% 能量条
+function renderEnergy() {
   const g = state.stats.galaxy;
   const l = state.stats.landscape;
-  document.getElementById('galaxy-percent-bar').style.width = g.percent + '%';
-  document.getElementById('galaxy-percent-text').textContent = g.percent + '%';
-  document.getElementById('galaxy-count-text').textContent = g.count + ' vote' + (g.count === 1 ? '' : 's');
-  document.getElementById('landscape-percent-bar').style.width = l.percent + '%';
-  document.getElementById('landscape-percent-text').textContent = l.percent + '%';
-  document.getElementById('landscape-count-text').textContent = l.count + ' vote' + (l.count === 1 ? '' : 's');
+  const total = g.count + l.count;
+  const gPct = total === 0 ? 50 : Math.round((g.count / total) * 100);
+  const lPct = 100 - gPct;
+
+  const gf = document.getElementById('energy-fill-galaxy');
+  const lf = document.getElementById('energy-fill-landscape');
+  const gl = document.getElementById('energy-label-galaxy');
+  const ll = document.getElementById('energy-label-landscape');
+  const gn = document.getElementById('energy-num-galaxy');
+  const ln = document.getElementById('energy-num-landscape');
+
+  if (gf) gf.style.width = gPct + '%';
+  if (lf) lf.style.width = lPct + '%';
+  if (gl) gl.textContent = 'Galaxy ' + gPct + '%';
+  if (ll) ll.textContent = 'Landscape ' + lPct + '%';
+  if (gn) gn.textContent = g.count;
+  if (ln) ln.textContent = l.count;
 }
 
-function showSelectionView() {
-  document.getElementById('theme-selection-view').classList.remove('hidden');
-  document.getElementById('name-voting-view').classList.add('hidden');
+function renderRanking() {
+  // 右侧排行榜：Galaxy 列 + Landscape 列，始终同时展示两个主题的实时排名
+  ['galaxy', 'landscape'].forEach((themeKey) => {
+    const listEl = document.getElementById('ranking-list-' + themeKey);
+    if (!listEl) return;
+    const data = state.results[themeKey] || { ranking: [] };
+    if (!data.ranking.length) {
+      listEl.innerHTML = '<p class="ranking-empty">No names yet.</p>';
+      return;
+    }
+    listEl.innerHTML = data.ranking.map((r, idx) => {
+      const rank = idx + 1;
+      const label = rank === 1 ? '1st' : rank === 2 ? '2nd' : rank === 3 ? '3rd' : rank;
+      return '' +
+        '<div class="rank-mini">' +
+          '<div class="rank-mini-idx">' + label + '</div>' +
+          '<div class="rank-mini-body">' +
+            '<div class="rank-mini-name">' + esc(r.name) + '</div>' +
+            '<div class="rank-mini-src">' + esc(r.source) + '</div>' +
+          '</div>' +
+          '<div class="rank-mini-votes"><strong>' + r.total_votes + '</strong></div>' +
+        '</div>';
+    }).join('');
+  });
 }
 
-function showVotingView(theme) {
-  document.getElementById('theme-selection-view').classList.add('hidden');
-  document.getElementById('name-voting-view').classList.remove('hidden');
-  document.getElementById('chosen-theme-label').textContent = THEME_LABELS[theme];
-  document.getElementById('voting-subtitle').className = theme === 'galaxy' ? 'section-subtitle galaxy-text' : 'section-subtitle landscape-text';
+/* ============== Main: 单主题卡渲染 ============== */
 
-  // 已投票：锁定主题切换，隐藏"Change theme"按钮并提示
-  const backWrap = document.querySelector('.back-to-themes');
-  const changeBtn = document.getElementById('change-theme-btn');
-  if (state.hasVoted) {
-    if (backWrap) backWrap.classList.add('locked');
-    if (changeBtn) { changeBtn.disabled = true; changeBtn.classList.add('disabled'); }
-  } else {
-    if (backWrap) backWrap.classList.remove('locked');
-    if (changeBtn) { changeBtn.disabled = false; changeBtn.classList.remove('disabled'); }
-  }
-
-  renderActiveThemeCard(theme);
-  if (window.FX) {
-    const card = document.getElementById('active-theme-card');
-    card.querySelectorAll('.fx-fluid').forEach((c) => c.remove());
-    window.FX.fluid(card, theme);
-  }
-}
-
-function renderActiveThemeCard(theme) {
+function renderActiveCard() {
   const card = document.getElementById('active-theme-card');
-  card.className = 'theme-card ' + theme;
-  const vote = state.myVote;
+  if (!card) return;
+  const theme = state.activeTheme;
+  const vote = state.myVotes[theme];
   const presets = theme === 'galaxy' ? state.activity.galaxy_presets : state.activity.landscape_presets;
   const cap = state.cap;
   const isOpen = state.activity.status === 'VotingOpen';
+  const myChosen = state.choice ? state.choice.chosen_theme : null;
+  const editable = isOpen && !vote;
 
   const selected = (vote && vote.selected_preset_names) || [];
   const noms = (vote && vote.user_nominated_names) || [];
   const nomInputs = state.activity.max_nomination_inputs || 5;
 
+  // 已投票用户：标记哪些名字是自己投的
+  const myPresetSet = new Set(selected.map((s) => String(s).toLowerCase()));
+  const myNomSet = new Set(noms.map((s) => String(s).toLowerCase()));
+
+  // 状态徽章：已提交 / 进行中；未选该主题时不显示徽章
+  const badgeText = vote ? 'Submitted' : (myChosen === theme ? 'In progress' : '');
+  const badgeHtml = badgeText
+    ? '<span class="badge ' + (vote ? 'badge-submitted' : 'badge-empty') + '" data-role="badge">' + badgeText + '</span>'
+    : '';
+
+  card.className = 'theme-card ' + theme;
+  card.setAttribute('data-theme', theme);
   card.innerHTML =
+    '<div class="theme-card-bg"></div>' +
     '<div class="theme-card-head">' +
       '<div class="theme-title-wrap">' +
-        '<div class="theme-icon">' + THEME_ICONS[theme] + '</div>' +
+        '<div class="theme-icon theme-icon--' + theme + '">' + THEME_ICONS[theme] + '</div>' +
         '<div>' +
           '<h2>' + esc(THEME_LABELS[theme]) + ' Theme</h2>' +
-          '<p class="theme-hint">Curated names plus your own nominations</p>' +
         '</div>' +
       '</div>' +
-      '<span class="badge ' + (vote ? 'badge-submitted' : 'badge-empty') + '" data-role="badge">' +
-        (vote ? 'Submitted (Editable)' : 'Not submitted') +
-      '</span>' +
+      badgeHtml +
     '</div>' +
 
     '<div class="cap-meter" data-role="meter">' +
@@ -175,9 +259,9 @@ function renderActiveThemeCard(theme) {
       presets.map((p) => {
         const checked = selected.some((s) => s.toLowerCase() === String(p).toLowerCase());
         return '' +
-          '<label class="check-item">' +
+          '<label class="check-item' + (checked ? ' check-item--mine' : '') + '">' +
             '<input type="checkbox" class="preset-cb" value="' + esc(p) + '" ' +
-              (checked ? 'checked ' : '') + (isOpen ? '' : 'disabled ') + '>' +
+              (checked ? 'checked ' : '') + (editable ? '' : 'disabled ') + '>' +
             '<span class="check-box"></span>' +
             '<span class="check-label">' + esc(p) + '</span>' +
           '</label>';
@@ -189,21 +273,33 @@ function renderActiveThemeCard(theme) {
       Array.from({ length: nomInputs }, (_, i) => {
         const v = noms[i] || '';
         return '<input type="text" class="nom-input" placeholder="Custom nomination ' + (i + 1) + ' (optional)" ' +
-          'value="' + esc(v) + '" maxlength="80" ' + (isOpen ? '' : 'disabled ') + '>';
+            'value="' + esc(v) + '" maxlength="80" ' + (editable ? '' : 'disabled ') + '>';
       }).join('') +
       '<p class="nom-note" data-role="nom-note"></p>' +
     '</div>' +
 
-    '<button class="btn ' + (vote ? 'btn-done' : 'btn-save') + '" data-role="save" ' + (isOpen ? '' : 'disabled ') + '>' +
-      '<svg class="btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4L19 7"/></svg>' +
-      (vote ? 'Update ' + esc(THEME_LABELS[theme]) + ' Vote' : 'Save ' + esc(THEME_LABELS[theme]) + ' Vote') +
-    '</button>' +
+    (state.hasVoted && myChosen && myChosen !== theme
+      ? '<div class="theme-locked-note">You have already chosen the <strong>' + esc(THEME_LABELS[myChosen]) + '</strong> theme. One person, one vote, one theme.</div>'
+      : '<button class="btn ' + (vote ? 'btn-done' : 'btn-save') + ' btn-save-card" data-role="save" ' + (editable ? '' : 'disabled ') + '>' +
+          '<svg class="btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4L19 7"/></svg>' +
+          (vote ? 'Successfully submitted' : 'Choose ' + esc(THEME_LABELS[theme]) + ' and Submit') +
+        '</button>'
+    ) +
     '<p class="card-error" data-role="error"></p>';
 
-  card.querySelectorAll('.preset-cb').forEach((cb) => cb.addEventListener('change', () => updateMeter(card)));
-  card.querySelectorAll('.nom-input').forEach((inp) => inp.addEventListener('input', () => updateMeter(card)));
-  card.querySelector('[data-role="save"]').addEventListener('click', () => onSave(theme));
+  if (editable) {
+    card.querySelectorAll('.preset-cb').forEach((cb) => cb.addEventListener('change', () => updateMeter(card)));
+    card.querySelectorAll('.nom-input').forEach((inp) => inp.addEventListener('input', () => updateMeter(card)));
+    const saveBtn = card.querySelector('[data-role="save"]');
+    if (saveBtn) saveBtn.addEventListener('click', () => onSave(theme));
+  }
   updateMeter(card);
+
+  // 流体背景
+  if (window.FX) {
+    card.querySelectorAll('.fx-fluid').forEach((c) => c.remove());
+    window.FX.fluid(card, theme);
+  }
 }
 
 function updateMeter(card) {
@@ -233,20 +329,31 @@ function updateMeter(card) {
   card.querySelector('[data-role="meter"]').classList.toggle('complete', used >= cap);
   card.querySelector('[data-role="used"]').textContent = used;
 
+  const isOpen = state.activity && state.activity.status === 'VotingOpen';
+  const myChosen = state.choice ? state.choice.chosen_theme : null;
+  const theme = card.dataset.theme;
+  const vote = state.myVotes[theme];
+  const submitted = !!vote;
+  const locked = (state.hasVoted && myChosen && myChosen !== theme) || submitted;
+
   presetBoxes.forEach((c) => {
-    c.disabled = (!c.checked && used >= cap) || !state.activity || state.activity.status !== 'VotingOpen';
+    c.disabled = (!c.checked && used >= cap) || !isOpen || !!locked;
   });
   nomInputs.forEach((inp) => {
     const hasValue = inp.value.trim().length > 0;
-    inp.disabled = (!hasValue && used >= cap) || !state.activity || state.activity.status !== 'VotingOpen';
+    inp.disabled = (!hasValue && used >= cap) || !isOpen || !!locked;
   });
 
   const hint = card.querySelector('[data-role="hint"]');
   const note = card.querySelector('[data-role="nom-note"]');
-  if (used >= cap) {
-    hint.textContent = 'All ' + cap + ' names selected. Your vote is complete — tap the button below to save or update it.';
+  if (submitted) {
+    hint.textContent = 'Your vote has been submitted.';
     hint.classList.add('full');
-    if (note) note.textContent = 'You have used all ' + cap + ' name slots. Clear one if you want to change your selection.';
+    if (note) note.textContent = '';
+  } else if (used >= cap) {
+    hint.textContent = 'All ' + cap + ' names selected. Your vote is complete — tap the button below to submit it.';
+    hint.classList.add('full');
+    if (note) note.textContent = '';
   } else {
     hint.textContent = remaining + (remaining === 1 ? ' name ' : ' names ') + 'remaining (presets + nominations combined).';
     hint.classList.remove('full');
@@ -254,71 +361,86 @@ function updateMeter(card) {
   }
 }
 
+function switchToTheme(theme) {
+  if (state.activeTheme === theme) return;
+  // 已投票用户禁止切换
+  if (state.hasVoted && state.choice && state.choice.chosen_theme !== theme) {
+    showToast('Your theme is locked. One person, one vote, one theme.', 'error');
+    return;
+  }
+  state.activeTheme = theme;
+  renderTabs();
+  renderStep2();
+  renderActiveCard();
+  renderRanking();
+}
+
 async function onSave(theme) {
   if (!state.user) { showToast('Please sign in first.', 'error'); openLogin(); return; }
   const card = document.getElementById('active-theme-card');
+  if (!card) return;
   const selected = [...card.querySelectorAll('.preset-cb')].filter((c) => c.checked).map((c) => c.value);
   const noms = [...card.querySelectorAll('.nom-input')].map((i) => i.value);
   const errBox = card.querySelector('[data-role="error"]');
-  errBox.textContent = '';
+  if (errBox) errBox.textContent = '';
 
-  try {
-    const res = await Api.saveVote(theme, selected, noms);
-    state.myVote = res.vote;
-    state.hasVoted = true;
-    // 记住用户主题偏好，结果页据此优先展示对应排行榜
-    try { localStorage.setItem('mrv_chosen_theme', theme); } catch {}
-    showToast(THEME_LABELS[theme] + ' vote saved. Taking you to the results…', 'success');
-    // 投完票自动跳转公开结果页
-    setTimeout(() => { window.location.href = '/results'; }, 900);
-  } catch (e) {
-    errBox.textContent = e.message;
-    showToast(e.message, 'error');
-  }
-}
-
-async function chooseTheme(theme) {
-  // 一人一票：已投票后禁止改选/切换主题
-  if (state.hasVoted) {
-    showToast('You have already voted in the ' + THEME_LABELS[state.choice ? state.choice.chosen_theme : theme] + ' theme. Each person may vote only once.', 'error');
+  if (state.choice && state.choice.chosen_theme !== theme) {
+    showToast('You have already chosen the ' + THEME_LABELS[state.choice.chosen_theme] + ' theme. One person, one theme.', 'error');
     return;
   }
-  // 免注册：未登录用户以匿名身份自动投票（init 已确保 state.user 存在）
-  if (!state.user) {
-    showToast('Preparing your voting session…', 'info');
-    await ensureAnonymous();
-  }
+
   try {
-    const res = await Api.saveThemeChoice(theme);
-    state.choice = res.choice;
-    state.stats = res.stats;
-    updateStatsUI();
-    // 记住用户主题偏好，用于结果页优先展示对应排行榜
+    if (!state.choice || state.choice.chosen_theme !== theme) {
+      const choiceRes = await Api.saveThemeChoice(theme);
+      state.choice = choiceRes.choice;
+      state.stats = choiceRes.stats;
+    }
+    const res = await Api.saveVote(theme, selected, noms);
+    state.myVotes[theme] = res.vote;
+    state.hasVoted = true;
     try { localStorage.setItem('mrv_chosen_theme', theme); } catch {}
-    showVotingView(theme);
-    showToast('You chose the ' + THEME_LABELS[theme] + ' theme.', 'success');
+    showToast('Successfully Submitted', 'success');
+    renderSidebar();
+    // 投票成功后刷新一次 ranking，让用户立即看到包含自己投票的结果
+    try { await loadResultsData(); } catch {}
+    renderActiveCard();
+    renderRanking();
+    // 提交后停止 results 轮询：当前会话内的结果保持提交时的快照，不再自动更新
+    if (state.timers.results) {
+      clearInterval(state.timers.results);
+      state.timers.results = null;
+    }
+    // 投票成功后滚动到右侧结果区顶部，让用户看到最终数据
+    setTimeout(() => {
+      const r = document.getElementById('main-column');
+      if (r) r.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 200);
   } catch (e) {
+    if (errBox) errBox.textContent = e.message;
     showToast(e.message, 'error');
   }
 }
 
+/* ============== 登录弹窗 ============== */
+
 function openLogin() {
-  document.getElementById('login-modal').classList.remove('hidden');
-  document.getElementById('login-name').focus();
+  const modal = document.getElementById('login-modal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  const input = document.getElementById('login-name');
+  if (input) input.focus();
 }
 function closeLogin() {
   document.getElementById('login-modal').classList.add('hidden');
   document.getElementById('login-error').textContent = '';
   document.getElementById('login-name').value = '';
 }
-
 async function submitLogin() {
   const input = document.getElementById('login-name');
   const name = input.value.trim();
   const errEl = document.getElementById('login-error');
   if (!name) { errEl.textContent = 'Please enter your full name.'; return; }
   try {
-    // 若此前是匿名身份，改用实名登录（会新建实名账号，旧匿名票不迁移）
     localStorage.removeItem('mrv_anon_token');
     const res = await Api.login(name);
     Api.setSession(res.token, res.user);
@@ -326,31 +448,27 @@ async function submitLogin() {
     closeLogin();
     renderIdentity();
     await loadUserState();
-    if (state.pendingTheme) {
-      await chooseTheme(state.pendingTheme);
-      state.pendingTheme = null;
-    } else if (state.choice) {
-      showVotingView(state.choice.chosen_theme);
-    }
+    syncActiveThemeToChoice();
+    renderAll();
   } catch (e) { errEl.textContent = e.message; }
 }
 
-document.getElementById('login-cancel').addEventListener('click', closeLogin);
-document.getElementById('login-submit').addEventListener('click', submitLogin);
-document.getElementById('login-name').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') submitLogin();
+const loginCancel = document.getElementById('login-cancel');
+if (loginCancel) loginCancel.addEventListener('click', closeLogin);
+const loginSubmit = document.getElementById('login-submit');
+if (loginSubmit) loginSubmit.addEventListener('click', submitLogin);
+const loginNameEl = document.getElementById('login-name');
+if (loginNameEl) {
+  loginNameEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitLogin(); });
+}
+
+// 主题 tabs 点击切换
+['galaxy', 'landscape'].forEach((t) => {
+  const tab = document.getElementById('tab-' + t);
+  if (tab) tab.addEventListener('click', () => switchToTheme(t));
 });
 
-// 主题选择按钮事件委托
-document.getElementById('theme-selection-view').addEventListener('click', (e) => {
-  const btn = e.target.closest('[data-role="choose-theme"]');
-  if (!btn) return;
-  chooseTheme(btn.dataset.theme);
-});
-
-document.getElementById('change-theme-btn').addEventListener('click', () => {
-  showSelectionView();
-});
+/* ============== 加载与状态同步 ============== */
 
 async function loadUserState() {
   if (!state.user) return;
@@ -363,17 +481,37 @@ async function loadUserState() {
   }
   try {
     const votesRes = await Api.getMyVotes();
-    state.myVote = state.choice
-      ? (state.choice.chosen_theme === 'galaxy' ? votesRes.galaxy : votesRes.landscape)
-      : null;
+    state.myVotes = { galaxy: votesRes.galaxy, landscape: votesRes.landscape };
   } catch {
-    state.myVote = null;
+    state.myVotes = { galaxy: null, landscape: null };
   }
-  // 已投过名字票 → 锁定主题（一人一票）
-  state.hasVoted = !!state.myVote;
+  state.hasVoted = !!(state.myVotes.galaxy || state.myVotes.landscape);
 }
 
-/** 免注册：确保当前浏览器有一个稳定的匿名投票身份（Guest-XXXX） */
+function syncActiveThemeToChoice() {
+  // 用户有已选主题 → 切到对应 tab
+  if (state.choice && state.choice.chosen_theme) {
+    state.activeTheme = state.choice.chosen_theme;
+  }
+  // 否则按 localStorage 偏好
+  if (!state.choice) {
+    try {
+      const stored = localStorage.getItem('mrv_chosen_theme');
+      if (stored === 'galaxy' || stored === 'landscape') state.activeTheme = stored;
+    } catch {}
+  }
+}
+
+async function loadResultsData() {
+  try {
+    const data = await Api.getResults();
+    state.results = {
+      galaxy: data.galaxy || { ranking: [], submissions: [] },
+      landscape: data.landscape || { ranking: [], submissions: [] },
+    };
+  } catch {}
+}
+
 async function ensureAnonymous() {
   if (state.user) return state.user;
   if (!state.anonToken) {
@@ -393,6 +531,13 @@ async function ensureAnonymous() {
   return state.user;
 }
 
+function renderAll() {
+  renderIdentity();
+  renderBanner();
+  renderSidebar();
+  renderActiveCard();
+}
+
 async function init() {
   try {
     state.activity = await Api.getActivity();
@@ -403,7 +548,6 @@ async function init() {
     return;
   }
 
-  // 免注册：无登录态的用户自动获得匿名身份，无需弹窗
   if (!state.user) {
     await ensureAnonymous();
   }
@@ -411,23 +555,34 @@ async function init() {
     await loadUserState();
   }
 
+  syncActiveThemeToChoice();
+
   document.title = state.activity.site_title;
-  document.getElementById('cap-display').textContent = state.cap;
-  renderIdentity();
-  renderBanner();
-  updateStatsUI();
-  document.getElementById('voting-end-label').textContent = fmtDateTime(state.activity.voting_end_at);
+  const capEl = document.getElementById('cap-display');
+  if (capEl) capEl.textContent = state.cap;
+  const endEl = document.getElementById('voting-end-label');
+  if (endEl) endEl.textContent = fmtDateTime(state.activity.voting_end_at);
+  renderAll();
 
-  if (state.choice) {
-    showVotingView(state.choice.chosen_theme);
-  } else {
-    showSelectionView();
+  await loadResultsData();
+  renderAll();
+  renderRanking();
+
+  // 周期刷新：
+  // - theme stats（能量条）始终实时刷新
+  // - results（排行榜）仅在未投票时自动刷新；提交投票后冻结，保持提交时的结果快照
+  state.timers.themeStats = setInterval(async () => {
+    try {
+      state.stats = await Api.getThemeChoiceStats();
+      renderEnergy();
+      renderTabs();
+    } catch {}
+  }, 15000);
+  if (!state.hasVoted) {
+    state.timers.results = setInterval(async () => {
+      try { await loadResultsData(); renderActiveCard(); renderRanking(); } catch {}
+    }, 30000);
   }
-
-  // 定期刷新主题比例（30 秒）
-  setInterval(async () => {
-    try { state.stats = await Api.getThemeChoiceStats(); updateStatsUI(); } catch {}
-  }, 30000);
 }
 
 init();

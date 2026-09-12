@@ -13,7 +13,9 @@
 
   /* ---------------- 艺术化光标 ---------------- */
   function initCursor() {
+    // 已禁用：恢复系统默认鼠标光标
     if (reduceMotion || isTouch) return;
+    return;
     const dot = document.createElement('div');
     dot.className = 'fx-cursor';
     const ring = document.createElement('div');

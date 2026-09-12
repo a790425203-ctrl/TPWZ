@@ -40,6 +40,8 @@ function initDb() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   db = new DatabaseSync(DB_PATH);
   db.exec('PRAGMA journal_mode = WAL;');
+  // 并发写入保护：写入等待而非直接报错 "database is locked"（万级并发投票场景必备）
+  db.exec('PRAGMA busy_timeout = 5000;');
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS voting_activity (
@@ -59,10 +61,17 @@ function initDb() {
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS app_user (
-      user_id  TEXT PRIMARY KEY,
-      fullname TEXT NOT NULL UNIQUE
+      user_id    TEXT PRIMARY KEY,
+      fullname   TEXT NOT NULL UNIQUE,
+      ip_address TEXT
     );
   `);
+
+  // 兼容旧库：若 app_user 缺少 ip_address 列则补齐（迁移安全，重复执行不报错）
+  const cols = db.prepare('PRAGMA table_info(app_user)').all();
+  if (!cols.some((c) => c.name === 'ip_address')) {
+    db.exec('ALTER TABLE app_user ADD COLUMN ip_address TEXT;');
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS user_theme_choice (
@@ -185,13 +194,22 @@ function arrayOr(v, fallback) {
 
 /* ---------------- 用户（实名） ---------------- */
 
-function getOrCreateUser(fullname) {
+function getOrCreateUser(fullname, ip) {
   const name = String(fullname || '').trim();
   const existing = db.prepare('SELECT * FROM app_user WHERE fullname = ?').get(name);
-  if (existing) return { user_id: existing.user_id, fullname: existing.fullname };
+  if (existing) {
+    if (ip) setUserIp(existing.user_id, ip);
+    return { user_id: existing.user_id, fullname: existing.fullname };
+  }
   const userId = 'u_' + crypto.randomUUID();
-  db.prepare('INSERT INTO app_user (user_id, fullname) VALUES (?, ?)').run(userId, name);
+  db.prepare('INSERT INTO app_user (user_id, fullname, ip_address) VALUES (?, ?, ?)').run(userId, name, ip || null);
   return { user_id: userId, fullname: name };
+}
+
+/** 记录/更新某用户的请求来源 IP（用于"每个 IP 只能投一次"的防重复投票校验） */
+function setUserIp(userId, ip) {
+  if (!ip) return;
+  db.prepare('UPDATE app_user SET ip_address = ? WHERE user_id = ?').run(ip, userId);
 }
 
 /**
@@ -199,14 +217,17 @@ function getOrCreateUser(fullname) {
  * 在浏览器本地生成一个匿名令牌（随机 UUID），同一浏览器始终复用同一身份，
  * 从而满足"一人一票"的隔离要求，同时免去注册/输名字的门槛。
  */
-function getOrCreateAnonymousUser(anonToken) {
+function getOrCreateAnonymousUser(anonToken, ip) {
   const token = String(anonToken || '').trim() || crypto.randomUUID();
   const name = 'Guest-' + token.slice(0, 6).toUpperCase();
   // 匿名身份按 user_id = 'anon_' + token 持久化，保证刷新后仍是同一人
   const userId = 'anon_' + token;
   const existing = db.prepare('SELECT * FROM app_user WHERE user_id = ?').get(userId);
-  if (existing) return { user_id: existing.user_id, fullname: existing.fullname };
-  db.prepare('INSERT INTO app_user (user_id, fullname) VALUES (?, ?)').run(userId, name);
+  if (existing) {
+    if (ip) setUserIp(userId, ip);
+    return { user_id: existing.user_id, fullname: existing.fullname };
+  }
+  db.prepare('INSERT INTO app_user (user_id, fullname, ip_address) VALUES (?, ?, ?)').run(userId, name, ip || null);
   return { user_id: userId, fullname: name };
 }
 
@@ -214,15 +235,31 @@ function getOrCreateAnonymousUser(anonToken) {
  * 匿名用户可选"设置真实名字"：只更新显示名，不改变 user_id，
  * 因此已投的票与一人一票限制都保持不变。
  */
-function renameAnonymousUser(anonToken, newName) {
+function renameAnonymousUser(anonToken, newName, ip) {
   const token = String(anonToken || '').trim();
   const name = String(newName || '').trim();
   if (!token || !name) throw new Error('Token and name are required.');
   const userId = 'anon_' + token;
   const user = db.prepare('SELECT * FROM app_user WHERE user_id = ?').get(userId);
   if (!user) throw new Error('Anonymous session not found.');
-  db.prepare('UPDATE app_user SET fullname = ? WHERE user_id = ?').run(name, userId);
+  db.prepare('UPDATE app_user SET fullname = ?, ip_address = COALESCE(ip_address, ?) WHERE user_id = ?').run(name, ip || null, userId);
   return { user_id: userId, fullname: name };
+}
+
+/**
+ * IP 防重复投票：判断当前请求来源的 IP 是否已经由"其他用户"投过票。
+ * - ip 为空（无法识别来源）时返回 false，降级为不拦截，避免误杀正常访问。
+ * - 排除当前用户自身的 user_id，因此同一用户重新提交（更新自己的票）不会被拦截。
+ */
+function hasIpVotedExcept(ip, userId) {
+  if (!ip) return false;
+  const row = db.prepare(`
+    SELECT 1 FROM user_theme_vote v
+    JOIN app_user u ON u.user_id = v.user_id
+    WHERE u.ip_address = ? AND v.user_id != ?
+    LIMIT 1
+  `).get(ip, userId);
+  return !!row;
 }
 
 /* ---------------- 主题选择（每人只能选一个主题） ---------------- */
@@ -328,15 +365,23 @@ function upsertVote(userId, fullname, themeType, selected, nominated) {
 
 /* ---------------- 聚合榜单 ---------------- */
 
-/** 用新计算结果整体替换某主题的聚合表（保证与投票记录始终一致） */
+/** 用新计算结果整体替换某主题的聚合表（保证与投票记录始终一致）。
+ *  使用事务包裹，避免中途崩溃导致聚合表被清空成空（万级并发写入场景的健壮性保障）。 */
 function replaceAggregation(themeType, entries) {
-  db.prepare('DELETE FROM aggregated_name_result WHERE theme_type = ?').run(themeType);
-  const ins = db.prepare(`
-    INSERT INTO aggregated_name_result (theme_type, name, source, total_votes, voters, nominators)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  for (const e of entries) {
-    ins.run(themeType, e.name, e.source, e.total_votes, JSON.stringify(e.voters), JSON.stringify(e.nominators));
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare('DELETE FROM aggregated_name_result WHERE theme_type = ?').run(themeType);
+    const ins = db.prepare(`
+      INSERT INTO aggregated_name_result (theme_type, name, source, total_votes, voters, nominators)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    for (const e of entries) {
+      ins.run(themeType, e.name, e.source, e.total_votes, JSON.stringify(e.voters), JSON.stringify(e.nominators));
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
   }
 }
 
@@ -472,7 +517,7 @@ function clearAllVotes() {
     ['galaxy', 'Galaxy', activity.galaxy_presets],
     ['landscape', 'NaturalLandscape', activity.landscape_presets],
   ]) {
-    db.replaceAggregation(themeType, aggregateTheme([], presets));
+    replaceAggregation(themeType, aggregateTheme([], presets));
   }
 }
 
@@ -483,6 +528,8 @@ module.exports = {
   getOrCreateUser,
   getOrCreateAnonymousUser,
   renameAnonymousUser,
+  setUserIp,
+  hasIpVotedExcept,
   exportVotesCsv,
   getThemeChoice,
   upsertThemeChoice,
