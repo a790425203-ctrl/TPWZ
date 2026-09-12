@@ -7,3 +7,6 @@ data/*.db-shm
 
 # 部署包（手动生成，不入库）
 deploy-*.zip
+
+# 本地验证截图与源码包
+outputs/

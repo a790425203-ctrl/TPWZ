@@ -1,0 +1,8 @@
+(node:43844) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+  Meeting room name voting — server running
+  Vote + Live Results: http://localhost:3000/
+  Admin:   http://localhost:3000/admin
+  Admin password (default): admin123
+
