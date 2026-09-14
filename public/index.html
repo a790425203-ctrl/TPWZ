@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/styles.css?v=35">
+  <link rel="stylesheet" href="/css/styles.css?v=38">
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%238B5CF6'><path d='M3 21h18M5 21V8l7-5 7 5v13M9 21V12h6v9' stroke='%23fff' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 </head>
 <body class="notranslate">
@@ -45,9 +45,6 @@
   </section>
 
   <main class="container">
-    <!-- 登录态 -->
-    <section class="identity-bar" id="identity-bar"></section>
-
     <!-- 活动状态横幅 -->
     <section id="activity-banner"></section>
 
@@ -192,24 +189,10 @@
     </div>
   </footer>
 
-  <!-- 登录弹窗（保留兼容） -->
-  <div class="modal-backdrop hidden" id="login-modal">
-    <div class="modal">
-      <h2>Sign in with your full name</h2>
-      <p class="modal-sub">Real-name voting only. Your name will appear publicly in the results.</p>
-      <input type="text" id="login-name" placeholder="e.g. Jane Doe" maxlength="80" autocomplete="name">
-      <div class="modal-actions">
-        <button class="btn btn-ghost" id="login-cancel">Cancel</button>
-        <button class="btn btn-primary" id="login-submit">Sign in</button>
-      </div>
-      <p class="modal-error" id="login-error"></p>
-    </div>
-  </div>
-
   <div class="toast-container" id="toast-container"></div>
 
   <script src="/js/api.js?v=35"></script>
   <script src="/js/fx-ripple.js?v=35"></script>
-  <script src="/js/vote.js?v=35"></script>
+  <script src="/js/vote.js?v=38"></script>
 </body>
 </html>

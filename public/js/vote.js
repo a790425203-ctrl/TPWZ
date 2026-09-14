@@ -59,46 +59,6 @@ function showToast(msg, type) {
   setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 3500);
 }
 
-/* ============== Identity ============== */
-
-function renderIdentity() {
-  const bar = document.getElementById('identity-bar');
-  if (!bar) return;
-  if (!state.user) {
-    bar.innerHTML = '<span class="identity-who">Connecting…</span>';
-    return;
-  }
-  const isAnon = /^Guest-/.test(state.user.fullname);
-  if (isAnon) {
-    bar.innerHTML =
-      '<span class="identity-who">Voting as <strong>' + esc(state.user.fullname) + '</strong></span>' +
-      '<button class="btn btn-ghost btn-sm" id="setname-btn">Set my name</button>';
-    const b = bar.querySelector('#setname-btn');
-    if (b) b.addEventListener('click', openSetName);
-  } else {
-    bar.innerHTML =
-      '<span class="identity-who">Voting as <strong>' + esc(state.user.fullname) + '</strong></span>' +
-      '<button class="btn btn-ghost btn-sm" id="logout-btn">Sign out</button>';
-    const b = bar.querySelector('#logout-btn');
-    if (b) b.addEventListener('click', () => {
-      Api.clearSession(); localStorage.removeItem('mrv_anon_token'); location.reload();
-    });
-  }
-}
-
-function openSetName() {
-  const name = window.prompt('Enter your name (optional — you can keep voting anonymously):', '');
-  if (name === null) return;
-  const trimmed = name.trim();
-  if (!trimmed) return;
-  Api.setMyName(trimmed).then((res) => {
-    Api.setSession(res.token, res.user);
-    state.user = res.user;
-    renderIdentity();
-    showToast('Name updated to ' + trimmed + '.', 'success');
-  }).catch((e) => showToast(e.message, 'error'));
-}
-
 function renderBanner() {
   const el = document.getElementById('activity-banner');
   if (!el) return;
@@ -376,7 +336,10 @@ function switchToTheme(theme) {
 }
 
 async function onSave(theme) {
-  if (!state.user) { showToast('Please sign in first.', 'error'); openLogin(); return; }
+  if (!state.user) {
+    await ensureAnonymous();
+    if (!state.user) { showToast('Could not start voting session.', 'error'); return; }
+  }
   const card = document.getElementById('active-theme-card');
   if (!card) return;
   const selected = [...card.querySelectorAll('.preset-cb')].filter((c) => c.checked).map((c) => c.value);
@@ -419,47 +382,6 @@ async function onSave(theme) {
     if (errBox) errBox.textContent = e.message;
     showToast(e.message, 'error');
   }
-}
-
-/* ============== 登录弹窗 ============== */
-
-function openLogin() {
-  const modal = document.getElementById('login-modal');
-  if (!modal) return;
-  modal.classList.remove('hidden');
-  const input = document.getElementById('login-name');
-  if (input) input.focus();
-}
-function closeLogin() {
-  document.getElementById('login-modal').classList.add('hidden');
-  document.getElementById('login-error').textContent = '';
-  document.getElementById('login-name').value = '';
-}
-async function submitLogin() {
-  const input = document.getElementById('login-name');
-  const name = input.value.trim();
-  const errEl = document.getElementById('login-error');
-  if (!name) { errEl.textContent = 'Please enter your full name.'; return; }
-  try {
-    localStorage.removeItem('mrv_anon_token');
-    const res = await Api.login(name);
-    Api.setSession(res.token, res.user);
-    state.user = res.user;
-    closeLogin();
-    renderIdentity();
-    await loadUserState();
-    syncActiveThemeToChoice();
-    renderAll();
-  } catch (e) { errEl.textContent = e.message; }
-}
-
-const loginCancel = document.getElementById('login-cancel');
-if (loginCancel) loginCancel.addEventListener('click', closeLogin);
-const loginSubmit = document.getElementById('login-submit');
-if (loginSubmit) loginSubmit.addEventListener('click', submitLogin);
-const loginNameEl = document.getElementById('login-name');
-if (loginNameEl) {
-  loginNameEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitLogin(); });
 }
 
 // 主题 tabs 点击切换
@@ -524,7 +446,6 @@ async function ensureAnonymous() {
     state.user = res.user;
     state.anonToken = res.anon_token || state.anonToken;
     try { localStorage.setItem('mrv_anon_token', state.anonToken); } catch {}
-    renderIdentity();
   } catch (e) {
     showToast('Could not start voting session: ' + e.message, 'error');
   }
@@ -532,7 +453,6 @@ async function ensureAnonymous() {
 }
 
 function renderAll() {
-  renderIdentity();
   renderBanner();
   renderSidebar();
   renderActiveCard();
@@ -579,8 +499,10 @@ async function init() {
     } catch {}
   }, 15000);
   if (!state.hasVoted) {
+    // 注意：结果轮询只刷新右侧排行榜，绝不能调用 renderActiveCard()，
+    // 否则每 30s 会整体重建投票卡，把用户正在选的复选框和已输入的名字清空。
     state.timers.results = setInterval(async () => {
-      try { await loadResultsData(); renderActiveCard(); renderRanking(); } catch {}
+      try { await loadResultsData(); renderRanking(); } catch {}
     }, 30000);
   }
 }
