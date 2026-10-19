@@ -1,17 +1,17 @@
 'use strict';
 
-/* v26：左 sidebar 为完整投票面板（顶部 Voting Guide + Step1 主题选择 + 选完才跳出的 Step2 投票卡），
-   右 main 为 Results Dashboard（两主题合并成 100% 能量条 + 双列排行榜：Galaxy 列 + Landscape 列）。
+/* v39：单界面「展示 + 投票」合并版。
+   一个 Live Voting Board 面板内完成：
+   - 顶部：Galaxy / Natural Landscape 主题标签（含实时占比）
+   - 能量条（主题对决 100%）
+   - 实时名字板：每个名字带 👍 点赞按钮（快捷投票），点亮的为本人草稿；全局票数实时刷新
+   - 底部：自己编辑（自定义提名） + 确定(Confirm) 按钮
 
-   行为：
-   - 左侧顶部：Voting Guide 引导用户如何投票
-   - Step 1：主题 tabs；点击主题后才出现 Step 2 投票卡
-   - 已投票用户加载后直接跳到已选主题，卡片自动显示
-   - 右侧：Results Dashboard 始终展示实时能量条与 Galaxy / Landscape 双列排行榜
-   - 未投票：左侧 tab 自由切换，右侧投票卡跟随主题变化
-   - 已投票：activeTheme 锁定为用户所选主题，禁用另一 tab
-   - 投票保存后：保持当前 tab，自动刷新右侧 Results Dashboard
-   - 能量条每 15s、结果每 30s 自动刷新
+   规则：
+   - 点击任意名字的 👍 = 草稿式点赞（本地高亮），不立即上报；点「确定」才正式提交
+   - 第一次点赞即锁定本人所投主题（一人一主题）；其他主题仍可查看但不可编辑
+   - 每人最多点亮 cap 个名字（预设 + 自定义合计，默认 7）
+   - 提交后冻结本人结果，能量条/主题占比仍实时
 */
 
 const THEME_ICONS = {
@@ -27,11 +27,14 @@ const state = {
   results: { galaxy: { ranking: [], submissions: [] }, landscape: { ranking: [], submissions: [] } },
   user: Api.getUser(),
   anonToken: localStorage.getItem('mrv_anon_token') || '',
-  choice: null,         // { user_id, chosen_theme, ... }
+  choice: null,
   myVotes: { galaxy: null, landscape: null },
-  hasVoted: false,      // 任意主题投过名字票即 true
-  activeTheme: null,     // 当前选中的主题（null = 尚未选择，未投票用户初始不显示投票卡）
+  hasVoted: false,
+  activeTheme: 'galaxy',   // 当前查看的主题
+  voteTheme: null,         // 本人正在投票的主题（首次点赞后锁定；提交后保持不变）
   cap: 7,
+  liked: { galaxy: new Set(), landscape: new Set() },        // 本人点亮（草稿）的名字
+  customNames: { galaxy: new Set(), landscape: new Set() },   // 本人添加的自定义名字（待提交）
   timers: { themeStats: null, results: null },
 };
 
@@ -70,17 +73,17 @@ function renderBanner() {
   el.innerHTML = '<div class="banner ' + (s === 'NotStarted' ? 'banner-warn' : 'banner-closed') + '">' + esc(msg) + '</div>';
 }
 
-/* ============== Sidebar: Tabs / Energy / Ranking ============== */
-
-function renderSidebar() {
-  renderTabs();
-  renderEnergy();
-  renderRanking();
-  renderStep2();
+/* 当前主题是否可编辑（点赞 / 添加 / 确定）：
+   投票进行中 + 未提交 + （尚未锁定主题 或 当前查看主题即本人投票主题） */
+function isEditable(theme) {
+  const isOpen = state.activity && state.activity.status === 'VotingOpen';
+  if (!isOpen || state.hasVoted) return false;
+  return state.voteTheme === null || state.voteTheme === theme;
 }
 
+/* ============== 渲染 ============== */
+
 function renderTabs() {
-  // 已投票：另一 tab disabled
   const myChosen = state.choice ? state.choice.chosen_theme : null;
   ['galaxy', 'landscape'].forEach((t) => {
     const tab = document.getElementById('tab-' + t);
@@ -88,48 +91,25 @@ function renderTabs() {
     const isActive = state.activeTheme === t;
     tab.classList.toggle('active', isActive);
     tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
-    // 锁定逻辑：已投票且不是用户主题 → disabled
-    if (state.hasVoted && myChosen && myChosen !== t) {
-      tab.classList.add('disabled');
-      tab.disabled = true;
-    } else {
-      tab.classList.remove('disabled');
-      tab.disabled = false;
-    }
-    // tab meta 文本
+    const viewOnly = (state.hasVoted && myChosen && myChosen !== t) || (state.voteTheme && state.voteTheme !== t);
+    tab.classList.toggle('viewonly', !!viewOnly);
     const meta = document.getElementById('tab-meta-' + t);
-    if (meta) {
-      const s = state.stats[t];
-      meta.textContent = s.count + ' vote' + (s.count === 1 ? '' : 's') + ' · ' + s.percent + '%';
-    }
+    if (meta) meta.textContent = state.stats[t].percent + '%';
   });
 }
 
-// 控制 Step2 投票卡显示/隐藏
-function renderStep2() {
-  const wrap = document.getElementById('step2-wrap');
-  const hint = document.getElementById('step1-hint');
-  if (!wrap || !hint) return;
-  const show = !!state.activeTheme;
-  wrap.classList.toggle('hidden', !show);
-  hint.classList.toggle('hidden', show);
-}
-
-// 渲染两主题合并的 100% 能量条
 function renderEnergy() {
   const g = state.stats.galaxy;
   const l = state.stats.landscape;
   const total = g.count + l.count;
   const gPct = total === 0 ? 50 : Math.round((g.count / total) * 100);
   const lPct = 100 - gPct;
-
   const gf = document.getElementById('energy-fill-galaxy');
   const lf = document.getElementById('energy-fill-landscape');
   const gl = document.getElementById('energy-label-galaxy');
   const ll = document.getElementById('energy-label-landscape');
   const gn = document.getElementById('energy-num-galaxy');
   const ln = document.getElementById('energy-num-landscape');
-
   if (gf) gf.style.width = gPct + '%';
   if (lf) lf.style.width = lPct + '%';
   if (gl) gl.textContent = 'Galaxy ' + gPct + '%';
@@ -138,257 +118,231 @@ function renderEnergy() {
   if (ln) ln.textContent = l.count;
 }
 
-function renderRanking() {
-  // 右侧排行榜：Galaxy 列 + Landscape 列，始终同时展示两个主题的实时排名
-  ['galaxy', 'landscape'].forEach((themeKey) => {
-    const listEl = document.getElementById('ranking-list-' + themeKey);
-    if (!listEl) return;
-    const data = state.results[themeKey] || { ranking: [] };
-    if (!data.ranking.length) {
-      listEl.innerHTML = '<p class="ranking-empty">No names yet.</p>';
-      return;
-    }
-    listEl.innerHTML = data.ranking.map((r, idx) => {
-      const rank = idx + 1;
-      const label = rank === 1 ? '1st' : rank === 2 ? '2nd' : rank === 3 ? '3rd' : rank;
-      return '' +
-        '<div class="rank-mini">' +
-          '<div class="rank-mini-idx">' + label + '</div>' +
-          '<div class="rank-mini-body">' +
-            '<div class="rank-mini-name">' + esc(r.name) + '</div>' +
-            '<div class="rank-mini-src">' + esc(r.source) + '</div>' +
-          '</div>' +
-          '<div class="rank-mini-votes"><strong>' + r.total_votes + '</strong></div>' +
-        '</div>';
-    }).join('');
-  });
-}
-
-/* ============== Main: 单主题卡渲染 ============== */
-
-function renderActiveCard() {
-  const card = document.getElementById('active-theme-card');
-  if (!card) return;
+function renderThemeHead() {
   const theme = state.activeTheme;
-  const vote = state.myVotes[theme];
-  const presets = theme === 'galaxy' ? state.activity.galaxy_presets : state.activity.landscape_presets;
-  const cap = state.cap;
-  const isOpen = state.activity.status === 'VotingOpen';
-  const myChosen = state.choice ? state.choice.chosen_theme : null;
-  const editable = isOpen && !vote;
+  const title = document.getElementById('board-theme-title');
+  const icon = document.getElementById('board-theme-icon');
+  const meta = document.getElementById('board-theme-meta');
+  if (title) title.textContent = THEME_LABELS[theme];
+  if (icon) icon.innerHTML = THEME_ICONS[theme];
+  if (meta) {
+    const r = (state.results[theme] && state.results[theme].ranking) || [];
+    const total = r.reduce((s, x) => s + x.total_votes, 0);
+    meta.textContent = r.length + ' names · ' + total + ' votes';
+  }
+}
 
-  const selected = (vote && vote.selected_preset_names) || [];
-  const noms = (vote && vote.user_nominated_names) || [];
-  const nomInputs = state.activity.max_nomination_inputs || 5;
+function renderBoard() {
+  const theme = state.activeTheme;
+  const container = document.getElementById('name-board');
+  if (!container) return;
+  const ranking = (state.results[theme] && state.results[theme].ranking) || [];
+  const liked = state.liked[theme];
+  const custom = state.customNames[theme];
+  const editable = isEditable(theme);
 
-  // 已投票用户：标记哪些名字是自己投的
-  const myPresetSet = new Set(selected.map((s) => String(s).toLowerCase()));
-  const myNomSet = new Set(noms.map((s) => String(s).toLowerCase()));
+  const rows = ranking.map((r) => ({
+    name: r.name, source: r.source, votes: r.total_votes, global: true, pending: false, liked: liked.has(r.name),
+  }));
+  for (const cn of custom) {
+    if (!rows.some((r) => r.name.toLowerCase() === cn.toLowerCase())) {
+      rows.push({ name: cn, source: 'nomination', votes: 0, global: false, pending: true, liked: true });
+    }
+  }
+  rows.sort((a, b) => {
+    if (a.global !== b.global) return a.global ? -1 : 1;
+    return b.votes - a.votes;
+  });
 
-  // 状态徽章：已提交 / 进行中；未选该主题时不显示徽章
-  const badgeText = vote ? 'Submitted' : (myChosen === theme ? 'In progress' : '');
-  const badgeHtml = badgeText
-    ? '<span class="badge ' + (vote ? 'badge-submitted' : 'badge-empty') + '" data-role="badge">' + badgeText + '</span>'
-    : '';
+  if (!rows.length) {
+    container.innerHTML = '<p class="ranking-empty">No names yet.</p>';
+    return;
+  }
 
-  card.className = 'theme-card ' + theme;
-  card.setAttribute('data-theme', theme);
-  card.innerHTML =
-    '<div class="theme-card-bg"></div>' +
-    '<div class="theme-card-head">' +
-      '<div class="theme-title-wrap">' +
-        '<div class="theme-icon theme-icon--' + theme + '">' + THEME_ICONS[theme] + '</div>' +
-        '<div>' +
-          '<h2>' + esc(THEME_LABELS[theme]) + ' Theme</h2>' +
+  container.innerHTML = rows.map((r) => {
+    const rank = r.global ? rows.filter((x) => x.global).indexOf(r) + 1 : null;
+    const rankLabel = rank === 1 ? '1st' : rank === 2 ? '2nd' : rank === 3 ? '3rd' : rank;
+    const srcLabel = r.source === 'preset' ? 'Curated' : 'Nomination';
+    return '' +
+      '<div class="nb-row' + (r.liked ? ' liked' : '') + (r.pending ? ' pending' : '') + (editable ? '' : ' viewonly') + '" data-name="' + esc(r.name) + '">' +
+        '<div class="nb-rank' + (rank && rank <= 3 ? ' top' : '') + '">' +
+          (rank ? esc(String(rankLabel)) : '<span class="nb-new">NEW</span>') +
         '</div>' +
-      '</div>' +
-      badgeHtml +
-    '</div>' +
+        '<div class="nb-main">' +
+          '<div class="nb-name">' + esc(r.name) + '</div>' +
+          '<div class="nb-src">' + srcLabel + (r.liked ? ' · your pick' : '') + '</div>' +
+        '</div>' +
+        '<button class="nb-like' + (r.liked ? ' liked' : '') + '" type="button" data-like="' + esc(r.name) + '"' +
+          (editable ? '' : ' disabled') + '>' +
+          '<svg class="nb-thumb" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v9H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3z"/><path d="M7 11l4-7a2 2 0 0 1 2 2v3h5a2 2 0 0 1 2 2.3l-1.2 6A2 2 0 0 1 16.8 20H7"/></svg>' +
+          '<span class="nb-like-count">' + r.votes + '</span>' +
+        '</button>' +
+      '</div>';
+  }).join('');
 
-    '<div class="cap-meter" data-role="meter">' +
-      '<div class="cap-bar"><div class="cap-bar-fill" data-role="fill"></div></div>' +
-      '<div class="cap-label">' +
-        '<span class="used" data-role="used">0</span>' +
-        ' / <span class="limit">' + cap + '</span> used' +
-      '</div>' +
-    '</div>' +
-    '<p class="cap-hint" data-role="hint"></p>' +
-
-    '<fieldset class="preset-list" data-role="presets">' +
-      '<legend>Curated names</legend>' +
-      presets.map((p) => {
-        const checked = selected.some((s) => s.toLowerCase() === String(p).toLowerCase());
-        return '' +
-          '<label class="check-item' + (checked ? ' check-item--mine' : '') + '">' +
-            '<input type="checkbox" class="preset-cb" value="' + esc(p) + '" ' +
-              (checked ? 'checked ' : '') + (editable ? '' : 'disabled ') + '>' +
-            '<span class="check-box"></span>' +
-            '<span class="check-label">' + esc(p) + '</span>' +
-          '</label>';
-      }).join('') +
-    '</fieldset>' +
-
-    '<div class="nomination-group">' +
-      '<label class="nom-title">Your nominations</label>' +
-      Array.from({ length: nomInputs }, (_, i) => {
-        const v = noms[i] || '';
-        return '<input type="text" class="nom-input" placeholder="Custom nomination ' + (i + 1) + ' (optional)" ' +
-            'value="' + esc(v) + '" maxlength="80" ' + (editable ? '' : 'disabled ') + '>';
-      }).join('') +
-      '<p class="nom-note" data-role="nom-note"></p>' +
-    '</div>' +
-
-    (state.hasVoted && myChosen && myChosen !== theme
-      ? '<div class="theme-locked-note">You have already chosen the <strong>' + esc(THEME_LABELS[myChosen]) + '</strong> theme. One person, one vote, one theme.</div>'
-      : '<button class="btn ' + (vote ? 'btn-done' : 'btn-save') + ' btn-save-card" data-role="save" ' + (editable ? '' : 'disabled ') + '>' +
-          '<svg class="btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4L19 7"/></svg>' +
-          (vote ? 'Successfully submitted' : 'Choose ' + esc(THEME_LABELS[theme]) + ' and Submit') +
-        '</button>'
-    ) +
-    '<p class="card-error" data-role="error"></p>';
-
-  if (editable) {
-    card.querySelectorAll('.preset-cb').forEach((cb) => cb.addEventListener('change', () => updateMeter(card)));
-    card.querySelectorAll('.nom-input').forEach((inp) => inp.addEventListener('input', () => updateMeter(card)));
-    const saveBtn = card.querySelector('[data-role="save"]');
-    if (saveBtn) saveBtn.addEventListener('click', () => onSave(theme));
-  }
-  updateMeter(card);
-
-  // 流体背景
-  if (window.FX) {
-    card.querySelectorAll('.fx-fluid').forEach((c) => c.remove());
-    window.FX.fluid(card, theme);
-  }
+  container.querySelectorAll('[data-like]').forEach((btn) => {
+    btn.addEventListener('click', () => toggleLike(theme, btn.getAttribute('data-like')));
+  });
 }
 
-function updateMeter(card) {
-  const cap = state.cap;
-  const presetBoxes = [...card.querySelectorAll('.preset-cb')];
-  const checked = presetBoxes.filter((c) => c.checked);
-  const selCount = checked.length;
-
-  const nomInputs = [...card.querySelectorAll('.nom-input')];
-  const nomAllow = Math.max(0, cap - selCount);
-  const seen = new Set();
-  let nomCount = 0;
-  for (const v of nomInputs.map((i) => i.value.trim())) {
-    if (!v) continue;
-    const k = v.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    nomCount++;
-    if (nomCount >= nomAllow) break;
-  }
-  const used = selCount + nomCount;
-  const remaining = Math.max(0, cap - used);
-
-  const fill = card.querySelector('[data-role="fill"]');
-  fill.style.width = Math.min(100, (used / cap) * 100) + '%';
-  fill.classList.toggle('full', used >= cap);
-  card.querySelector('[data-role="meter"]').classList.toggle('complete', used >= cap);
-  card.querySelector('[data-role="used"]').textContent = used;
-
-  const isOpen = state.activity && state.activity.status === 'VotingOpen';
-  const myChosen = state.choice ? state.choice.chosen_theme : null;
-  const theme = card.dataset.theme;
-  const vote = state.myVotes[theme];
-  const submitted = !!vote;
-  const locked = (state.hasVoted && myChosen && myChosen !== theme) || submitted;
-
-  presetBoxes.forEach((c) => {
-    c.disabled = (!c.checked && used >= cap) || !isOpen || !!locked;
-  });
-  nomInputs.forEach((inp) => {
-    const hasValue = inp.value.trim().length > 0;
-    inp.disabled = (!hasValue && used >= cap) || !isOpen || !!locked;
-  });
-
-  const hint = card.querySelector('[data-role="hint"]');
-  const note = card.querySelector('[data-role="nom-note"]');
-  if (submitted) {
-    hint.textContent = 'Your vote has been submitted.';
-    hint.classList.add('full');
-    if (note) note.textContent = '';
-  } else if (used >= cap) {
-    hint.textContent = 'All ' + cap + ' names selected. Your vote is complete — tap the button below to submit it.';
-    hint.classList.add('full');
-    if (note) note.textContent = '';
+function renderHint() {
+  const el = document.getElementById('board-hint');
+  if (!el) return;
+  const theme = state.activeTheme;
+  if (!isEditable(theme)) { el.textContent = ''; return; }
+  if (!state.voteTheme) {
+    el.textContent = 'Tap \u{1F44D} on the names you like. Your first tap chooses the ' + THEME_LABELS[theme] + ' theme. Pick up to ' + state.cap + '.';
   } else {
-    hint.textContent = remaining + (remaining === 1 ? ' name ' : ' names ') + 'remaining (presets + nominations combined).';
-    hint.classList.remove('full');
-    if (note) note.textContent = 'You can nominate up to ' + remaining + ' more name' + (remaining === 1 ? '' : 's') + ' (duplicates and whitespace are ignored). The total of presets + nominations cannot exceed ' + cap + '.';
+    el.textContent = 'Tap \u{1F44D} to add or remove names. Pick up to ' + state.cap + ', then tap Confirm.';
   }
 }
 
-function switchToTheme(theme) {
-  if (state.activeTheme === theme) return;
-  // 已投票用户禁止切换
-  if (state.hasVoted && state.choice && state.choice.chosen_theme !== theme) {
-    showToast('Your theme is locked. One person, one vote, one theme.', 'error');
-    return;
+function renderFoot() {
+  const voteZone = document.getElementById('vote-zone');
+  const readonlyZone = document.getElementById('readonly-zone');
+  const readonlyMsg = document.getElementById('readonly-msg');
+  if (!voteZone || !readonlyZone) return;
+
+  const editable = isEditable(state.activeTheme);
+  if (editable) {
+    voteZone.classList.remove('hidden');
+    readonlyZone.classList.add('hidden');
+    const theme = state.activeTheme;
+    const used = state.liked[theme].size;
+    const cap = state.cap;
+    const capEl = document.getElementById('cap-meter-inline');
+    if (capEl) capEl.textContent = used + ' / ' + cap + ' picked';
+    const note = document.getElementById('nom-editor-note');
+    if (note) {
+      if (used >= cap) note.textContent = 'You have picked all ' + cap + ' names. Tap Confirm to submit.';
+      else note.textContent = 'Add a custom name or pick up to ' + (cap - used) + ' more. One person votes once, in one theme.';
+    }
+    const input = document.getElementById('nom-input');
+    if (input) { input.disabled = false; }
+  } else {
+    voteZone.classList.add('hidden');
+    readonlyZone.classList.remove('hidden');
+    let msg;
+    if (state.hasVoted) {
+      const t = state.voteTheme || (state.choice && state.choice.chosen_theme);
+      msg = 'You have submitted your vote for the ' + (t === 'galaxy' ? 'Galaxy' : 'Natural Landscape') + ' theme. Thanks for voting!';
+    } else if (state.voteTheme && state.voteTheme !== state.activeTheme) {
+      msg = 'You are voting in the ' + (state.voteTheme === 'galaxy' ? 'Galaxy' : 'Natural Landscape') + ' theme. Switch to that tab to edit your picks, or tap Clear to start over.';
+    } else {
+      msg = 'Voting is closed. Browse the live results above.';
+    }
+    if (readonlyMsg) readonlyMsg.textContent = msg;
   }
-  state.activeTheme = theme;
+}
+
+function renderAll() {
+  renderBanner();
   renderTabs();
-  renderStep2();
-  renderActiveCard();
-  renderRanking();
+  renderEnergy();
+  renderThemeHead();
+  renderBoard();
+  renderHint();
+  renderFoot();
 }
 
-async function onSave(theme) {
-  if (!state.user) {
-    await ensureAnonymous();
-    if (!state.user) { showToast('Could not start voting session.', 'error'); return; }
-  }
-  const card = document.getElementById('active-theme-card');
-  if (!card) return;
-  const selected = [...card.querySelectorAll('.preset-cb')].filter((c) => c.checked).map((c) => c.value);
-  const noms = [...card.querySelectorAll('.nom-input')].map((i) => i.value);
-  const errBox = card.querySelector('[data-role="error"]');
-  if (errBox) errBox.textContent = '';
+/* ============== 交互 ============== */
 
-  if (state.choice && state.choice.chosen_theme !== theme) {
-    showToast('You have already chosen the ' + THEME_LABELS[state.choice.chosen_theme] + ' theme. One person, one theme.', 'error');
+function toggleLike(theme, name) {
+  if (!isEditable(theme)) return;
+  const set = state.liked[theme];
+  if (set.has(name)) {
+    set.delete(name);
+    if (state.customNames[theme].has(name)) state.customNames[theme].delete(name);
+  } else {
+    if (set.size >= state.cap) { showToast('You can pick up to ' + state.cap + ' names.', 'error'); return; }
+    set.add(name);
+  }
+  if (state.liked[theme].size === 0 && state.voteTheme === theme && !state.hasVoted) {
+    state.voteTheme = null;
+  } else if (state.liked[theme].size > 0 && !state.voteTheme) {
+    state.voteTheme = theme;
+  }
+  renderAll();
+}
+
+function addCustom() {
+  if (!isEditable(state.activeTheme)) return;
+  const input = document.getElementById('nom-input');
+  const name = input.value.trim();
+  if (!name) return;
+  const theme = state.activeTheme;
+  const key = name.toLowerCase();
+  const exists = state.liked[theme].has(name)
+    || [...state.customNames[theme]].some((c) => c.toLowerCase() === key)
+    || (state.results[theme].ranking || []).some((r) => r.name.toLowerCase() === key);
+  if (exists) {
+    showToast('That name is already in your picks or on the board.', 'error');
+    input.value = '';
     return;
   }
+  if (state.liked[theme].size >= state.cap) {
+    showToast('You can pick up to ' + state.cap + ' names.', 'error');
+    return;
+  }
+  state.customNames[theme].add(name);
+  state.liked[theme].add(name);
+  if (!state.voteTheme) state.voteTheme = theme;
+  input.value = '';
+  renderAll();
+}
+
+function clearPicks() {
+  if (state.hasVoted || !state.voteTheme) return;
+  state.liked[state.voteTheme].clear();
+  state.customNames[state.voteTheme].clear();
+  state.voteTheme = null;
+  renderAll();
+}
+
+async function onConfirm() {
+  const theme = state.voteTheme;
+  if (!theme) { showToast('Tap \u{1F44D} on at least one name first.', 'error'); return; }
+  if (state.liked[theme].size === 0) { showToast('Tap \u{1F44D} on at least one name first.', 'error'); return; }
+  if (!await ensureValidSession()) {
+    showToast('Could not start voting session.', 'error');
+    return;
+  }
+  const presets = theme === 'galaxy' ? state.activity.galaxy_presets : state.activity.landscape_presets;
+  const inPresets = (n) => presets.some((p) => String(p).trim().toLowerCase() === n.toLowerCase());
+  const selected = [...state.liked[theme]].filter(inPresets);
+  const nominated = [...state.liked[theme]].filter((n) => !inPresets(n));
 
   try {
     if (!state.choice || state.choice.chosen_theme !== theme) {
-      const choiceRes = await Api.saveThemeChoice(theme);
-      state.choice = choiceRes.choice;
-      state.stats = choiceRes.stats;
+      const cRes = await Api.saveThemeChoice(theme);
+      state.choice = cRes.choice;
+      state.stats = cRes.stats;
     }
-    const res = await Api.saveVote(theme, selected, noms);
-    state.myVotes[theme] = res.vote;
+    await Api.saveVote(theme, selected, nominated);
+    state.myVotes[theme] = { selected_preset_names: selected, user_nominated_names: nominated };
     state.hasVoted = true;
-    try { localStorage.setItem('mrv_chosen_theme', theme); } catch {}
+    state.activeTheme = theme;
     showToast('Successfully Submitted', 'success');
-    renderSidebar();
-    // 投票成功后刷新一次 ranking，让用户立即看到包含自己投票的结果
     try { await loadResultsData(); } catch {}
-    renderActiveCard();
-    renderRanking();
-    // 提交后停止 results 轮询：当前会话内的结果保持提交时的快照，不再自动更新
+    renderAll();
     if (state.timers.results) {
       clearInterval(state.timers.results);
       state.timers.results = null;
     }
-    // 投票成功后滚动到右侧结果区顶部，让用户看到最终数据
     setTimeout(() => {
-      const r = document.getElementById('main-column');
+      const r = document.getElementById('board-foot');
       if (r) r.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 200);
   } catch (e) {
-    if (errBox) errBox.textContent = e.message;
     showToast(e.message, 'error');
   }
 }
 
-// 主题 tabs 点击切换
-['galaxy', 'landscape'].forEach((t) => {
-  const tab = document.getElementById('tab-' + t);
-  if (tab) tab.addEventListener('click', () => switchToTheme(t));
-});
+function switchTheme(theme) {
+  if (state.activeTheme === theme) return;
+  state.activeTheme = theme;
+  renderAll();
+}
 
 /* ============== 加载与状态同步 ============== */
 
@@ -398,30 +352,26 @@ async function loadUserState() {
     const choiceRes = await Api.getMyThemeChoice();
     state.choice = choiceRes.choice;
     state.stats = choiceRes.stats;
-  } catch {
-    state.choice = null;
-  }
+  } catch { state.choice = null; }
   try {
     const votesRes = await Api.getMyVotes();
     state.myVotes = { galaxy: votesRes.galaxy, landscape: votesRes.landscape };
-  } catch {
-    state.myVotes = { galaxy: null, landscape: null };
-  }
+  } catch { state.myVotes = { galaxy: null, landscape: null }; }
   state.hasVoted = !!(state.myVotes.galaxy || state.myVotes.landscape);
 }
 
-function syncActiveThemeToChoice() {
-  // 用户有已选主题 → 切到对应 tab
-  if (state.choice && state.choice.chosen_theme) {
-    state.activeTheme = state.choice.chosen_theme;
-  }
-  // 否则按 localStorage 偏好
-  if (!state.choice) {
-    try {
-      const stored = localStorage.getItem('mrv_chosen_theme');
-      if (stored === 'galaxy' || stored === 'landscape') state.activeTheme = stored;
-    } catch {}
-  }
+/** 用已提交的投票记录回填本人草稿（点赞高亮 + 自定义名字），并锁定投票主题 */
+function hydrateFromMyVotes() {
+  ['galaxy', 'landscape'].forEach((t) => {
+    const v = state.myVotes[t];
+    if (!v) return;
+    state.voteTheme = t;
+    (v.selected_preset_names || []).forEach((n) => state.liked[t].add(n));
+    (v.user_nominated_names || []).forEach((n) => {
+      state.liked[t].add(n);
+      state.customNames[t].add(n);
+    });
+  });
 }
 
 async function loadResultsData() {
@@ -432,6 +382,20 @@ async function loadResultsData() {
       landscape: data.landscape || { ranking: [], submissions: [] },
     };
   } catch {}
+}
+
+/** 确保当前持有有效（未过期）的用户令牌；失效则清空并自动重新匿名登录（复用同一匿名身份，不破坏一人一票） */
+async function ensureValidSession() {
+  if (state.user) {
+    try {
+      const me = await Api.me();
+      if (me && me.user && me.user.user_id) { state.user = me.user; return true; }
+    } catch {}
+    Api.clearSession();
+    state.user = null;
+  }
+  await ensureAnonymous();
+  return !!state.user;
 }
 
 async function ensureAnonymous() {
@@ -452,12 +416,6 @@ async function ensureAnonymous() {
   return state.user;
 }
 
-function renderAll() {
-  renderBanner();
-  renderSidebar();
-  renderActiveCard();
-}
-
 async function init() {
   try {
     state.activity = await Api.getActivity();
@@ -468,43 +426,60 @@ async function init() {
     return;
   }
 
-  if (!state.user) {
+  if (state.user) {
+    // 校验已存令牌是否仍有效；失效（如超过 TTL）则清空并重新匿名登录
+    try {
+      const me = await Api.me();
+      if (me && me.user && me.user.user_id) state.user = me.user;
+      else throw new Error('invalid');
+    } catch {
+      Api.clearSession();
+      state.user = null;
+      await ensureAnonymous();
+    }
+  } else {
     await ensureAnonymous();
   }
-  if (state.user) {
-    await loadUserState();
-  }
+  if (state.user) await loadUserState();
+  hydrateFromMyVotes();
 
-  syncActiveThemeToChoice();
+  if (!state.activeTheme) state.activeTheme = 'galaxy';
+  if (state.voteTheme) state.activeTheme = state.voteTheme;
 
-  document.title = state.activity.site_title;
-  const capEl = document.getElementById('cap-display');
-  if (capEl) capEl.textContent = state.cap;
-  const endEl = document.getElementById('voting-end-label');
-  if (endEl) endEl.textContent = fmtDateTime(state.activity.voting_end_at);
   renderAll();
-
   await loadResultsData();
   renderAll();
-  renderRanking();
 
-  // 周期刷新：
-  // - theme stats（能量条）始终实时刷新
-  // - results（排行榜）仅在未投票时自动刷新；提交投票后冻结，保持提交时的结果快照
+  // 主题占比 / 能量条：始终实时刷新
   state.timers.themeStats = setInterval(async () => {
     try {
       state.stats = await Api.getThemeChoiceStats();
       renderEnergy();
       renderTabs();
+      renderThemeHead();
     } catch {}
   }, 15000);
+
+  // 名字板票数：仅未投票时自动刷新（提交后冻结，保持提交时的结果快照）
   if (!state.hasVoted) {
-    // 注意：结果轮询只刷新右侧排行榜，绝不能调用 renderActiveCard()，
-    // 否则每 30s 会整体重建投票卡，把用户正在选的复选框和已输入的名字清空。
     state.timers.results = setInterval(async () => {
-      try { await loadResultsData(); renderRanking(); } catch {}
+      try { await loadResultsData(); renderBoard(); renderThemeHead(); } catch {}
     }, 30000);
   }
 }
+
+// 静态元素事件（vote-zone 不被重建，可一次性绑定）
+['galaxy', 'landscape'].forEach((t) => {
+  const tab = document.getElementById('tab-' + t);
+  if (tab) tab.addEventListener('click', () => switchTheme(t));
+});
+const confirmBtn = document.getElementById('confirm-btn');
+if (confirmBtn) confirmBtn.addEventListener('click', onConfirm);
+const nomAdd = document.getElementById('nom-add');
+if (nomAdd) nomAdd.addEventListener('click', addCustom);
+const clearBtn = document.getElementById('clear-btn');
+if (clearBtn) clearBtn.addEventListener('click', clearPicks);
+const nomInput = document.getElementById('nom-input');
+if (nomInput) nomInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addCustom(); } });
 
 init();

@@ -12,7 +12,7 @@ const crypto = require('node:crypto');
 
 const SECRET = process.env.SESSION_SECRET || 'meeting-room-name-voting-demo-secret';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
-const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 天
+const TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 365 天：投票活动跨度长，避免令牌过期导致无法提交
 
 function sign(payload) {
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');

@@ -4,12 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Meeting room name voting</title>
-  <meta name="description" content="Pick a theme, vote for your favorite meeting room names, watch the live leaderboard.">
+  <meta name="description" content="Tap to like your favorite meeting room names, watch the live leaderboard, then confirm your vote.">
   <meta name="google" content="notranslate">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/styles.css?v=38">
+  <link rel="stylesheet" href="/css/styles.css?v=39">
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%238B5CF6'><path d='M3 21h18M5 21V8l7-5 7 5v13M9 21V12h6v9' stroke='%23fff' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 </head>
 <body class="notranslate">
@@ -48,137 +48,89 @@
     <!-- 活动状态横幅 -->
     <section id="activity-banner"></section>
 
-    <!-- v21 两栏布局：左窄 sidebar（Step1 主题选择 + 选完才跳出的 Step2 投票卡）
-                      + 右宽 main（100% 能量条 + 实时排行榜） -->
-    <div class="v17-grid">
+    <!-- v39：单界面「展示 + 投票」合并版
+         一个展示面板内：主题标签(实时占比) + 能量条 + 实时名字板(点赞投票) + 底部自定义提名与确定按钮 -->
+    <div class="board-wrap">
+      <div class="panel-frame board-panel">
+        <div class="panel-frame-title">Live Voting Board</div>
+        <div class="panel-frame-body">
 
-      <!-- 左 sidebar：sticky，两级投票流程 -->
-      <aside class="sidebar-column" id="sidebar-column">
-        <div class="sidebar-inner">
+          <!-- 主题切换：Galaxy / Natural Landscape（含实时占比） -->
+          <div class="theme-tabs board-tabs" id="theme-tabs" role="tablist">
+            <button class="theme-tab galaxy" data-theme="galaxy" id="tab-galaxy" role="tab" aria-selected="true">
+              <span class="tab-icon" id="tab-icon-galaxy">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 L14 9.5 L22 12 L14 14.5 L12 22 L10 14.5 L2 12 L10 9.5 Z"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></svg>
+              </span>
+              <div class="tab-body">
+                <span class="tab-title">Galaxy</span>
+                <span class="tab-meta" id="tab-meta-galaxy">0%</span>
+              </div>
+            </button>
+            <button class="theme-tab landscape" data-theme="landscape" id="tab-landscape" role="tab" aria-selected="false">
+              <span class="tab-icon" id="tab-icon-landscape">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 21 L8 10 L12 14 L16 5 L22 21 Z"/><circle cx="17" cy="4" r="1.5" fill="currentColor" stroke="none"/></svg>
+              </span>
+              <div class="tab-body">
+                <span class="tab-title">Natural Landscape</span>
+                <span class="tab-meta" id="tab-meta-landscape">0%</span>
+              </div>
+            </button>
+          </div>
 
-          <!-- 框 1：Voting Guide（无图标） -->
-          <div class="panel-frame voting-guide-frame">
-            <div class="panel-frame-title">Voting Guide</div>
-            <div class="panel-frame-body">
-              <ol class="howto-list">
-                <li><span class="howto-num">1</span> Choose a theme — Galaxy or Natural Landscape.</li>
-                <li><span class="howto-num">2</span> Pick or propose your favorite names, then tap Submit (one vote per person).</li>
-              </ol>
+          <!-- 实时能量条（主题对决 100%） -->
+          <div class="subcard energy-subcard board-energy">
+            <div class="energy-bar" id="energy-bar">
+              <div class="energy-seg galaxy" id="energy-fill-galaxy" style="width:50%">
+                <span class="energy-label" id="energy-label-galaxy">Galaxy 50%</span>
+              </div>
+              <div class="energy-seg landscape" id="energy-fill-landscape" style="width:50%">
+                <span class="energy-label" id="energy-label-landscape">Landscape 50%</span>
+              </div>
+            </div>
+            <div class="energy-legend">
+              <span class="energy-legend-item galaxy"><i></i>Galaxy<b id="energy-num-galaxy">0</b></span>
+              <span class="energy-legend-item landscape"><i></i>Natural Landscape<b id="energy-num-landscape">0</b></span>
             </div>
           </div>
 
-          <!-- 框 2：Vote Now（含 Step 1 + Step 2） -->
-          <div class="panel-frame vote-now-frame">
-            <div class="panel-frame-title">Vote Now</div>
-            <div class="panel-frame-body">
+          <!-- 当前主题实时名字板（点赞投票） -->
+          <div class="board-theme">
+            <div class="board-theme-head">
+              <span class="board-theme-icon" id="board-theme-icon"></span>
+              <span class="board-theme-title" id="board-theme-title">Galaxy</span>
+              <span class="board-theme-meta" id="board-theme-meta"></span>
+            </div>
+            <p class="board-hint" id="board-hint"></p>
+            <div class="name-board" id="name-board"></div>
+          </div>
 
-              <!-- Step 1: 主题选择 tabs -->
-              <div class="step1-block">
-                <span class="step-eyebrow">Step 1 · Pick a theme</span>
-                <div class="theme-tabs" id="theme-tabs" role="tablist">
-                  <button class="theme-tab galaxy" data-theme="galaxy" id="tab-galaxy" role="tab" aria-selected="true">
-                    <span class="tab-icon" id="tab-icon-galaxy">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 L14 9.5 L22 12 L14 14.5 L12 22 L10 14.5 L2 12 L10 9.5 Z"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></svg>
-                    </span>
-                    <div class="tab-body">
-                      <span class="tab-title">Galaxy Theme</span>
-                      <span class="tab-meta" id="tab-meta-galaxy">0 votes · 0%</span>
-                    </div>
-                  </button>
-                  <button class="theme-tab landscape" data-theme="landscape" id="tab-landscape" role="tab" aria-selected="false">
-                    <span class="tab-icon" id="tab-icon-landscape">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 21 L8 10 L12 14 L16 5 L22 21 Z"/><circle cx="17" cy="4" r="1.5" fill="currentColor" stroke="none"/></svg>
-                    </span>
-                    <div class="tab-body">
-                      <span class="tab-title">Natural Landscape</span>
-                      <span class="tab-meta" id="tab-meta-landscape">0 votes · 0%</span>
-                    </div>
-                  </button>
+          <!-- 底部：自己编辑（自定义提名） + 确定按钮 -->
+          <div class="board-foot" id="board-foot">
+            <div class="vote-zone" id="vote-zone">
+              <div class="nom-editor">
+                <div class="nom-editor-title">Add your own name</div>
+                <div class="nom-editor-row">
+                  <input type="text" id="nom-input" placeholder="Type a meeting room name…" maxlength="80" autocomplete="off">
+                  <button class="btn btn-ghost" id="nom-add" type="button">Add</button>
                 </div>
+                <p class="nom-editor-note" id="nom-editor-note"></p>
               </div>
-
-              <!-- 未选主题时：引导提示 -->
-              <div class="step1-hint" id="step1-hint">
-                <div class="step1-hint-icon">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
-                </div>
-                <p>Choose a theme above to reveal the voting panel.</p>
+              <div class="board-actions">
+                <button class="btn btn-save btn-confirm" id="confirm-btn" type="button">
+                  <svg class="btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4L19 7"/></svg>
+                  Confirm
+                </button>
+                <button class="btn btn-ghost btn-clear" id="clear-btn" type="button">Clear my picks</button>
+                <span class="cap-meter-inline" id="cap-meter-inline"></span>
               </div>
-
-              <!-- Step 2: 选完主题才出现的投票卡 -->
-              <div class="step2-wrap hidden" id="step2-wrap">
-                <span class="step-eyebrow">Step 2 · Vote on Names</span>
-                <article class="theme-card galaxy" id="active-theme-card" data-theme="galaxy">
-                  <!-- 由 vote.js 注入：完整投票卡（带 FX.fluid 背景） -->
-                </article>
-              </div>
-
+            </div>
+            <div class="readonly-zone hidden" id="readonly-zone">
+              <p class="readonly-msg" id="readonly-msg"></p>
             </div>
           </div>
 
         </div>
-      </aside>
-
-      <!-- 右 main：实时评选结果区 -->
-      <section class="main-column results-column" id="main-column">
-        <div class="panel-frame dashboard-frame">
-          <div class="panel-frame-title">Live Result Dashboard</div>
-          <div class="panel-frame-body">
-
-            <!-- Part 1: Energy Split -->
-            <div class="panel-part">
-              <div class="panel-part-label">Energy Split</div>
-              <div class="subcard energy-subcard">
-                <div class="energy-bar" id="energy-bar">
-                  <div class="energy-seg galaxy" id="energy-fill-galaxy" style="width:50%">
-                    <span class="energy-label" id="energy-label-galaxy">Galaxy 50%</span>
-                  </div>
-                  <div class="energy-seg landscape" id="energy-fill-landscape" style="width:50%">
-                    <span class="energy-label" id="energy-label-landscape">Landscape 50%</span>
-                  </div>
-                </div>
-                <div class="energy-legend">
-                  <span class="energy-legend-item galaxy"><i></i>Galaxy Theme<b id="energy-num-galaxy">0</b></span>
-                  <span class="energy-legend-item landscape"><i></i>Natural Landscape<b id="energy-num-landscape">0</b></span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Part 2: Name Ranking -->
-            <div class="panel-part">
-              <div class="panel-part-label">Name Ranking</div>
-              <div class="subcard">
-                <div class="ranking-columns">
-                  <div class="ranking-col galaxy" id="ranking-col-galaxy">
-                    <div class="ranking-col-head">
-                      <span class="ranking-col-icon galaxy">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 L14 9.5 L22 12 L14 14.5 L12 22 L10 14.5 L2 12 L10 9.5 Z"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></svg>
-                      </span>
-                      <span class="ranking-col-title">Galaxy</span>
-                    </div>
-                    <div class="ranking-list" id="ranking-list-galaxy">
-                      <p class="ranking-empty">No names yet.</p>
-                    </div>
-                  </div>
-                  <div class="ranking-col landscape" id="ranking-col-landscape">
-                    <div class="ranking-col-head">
-                      <span class="ranking-col-icon landscape">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 21 L8 10 L12 14 L16 5 L22 21 Z"/><circle cx="17" cy="4" r="1.5" fill="currentColor" stroke="none"/></svg>
-                      </span>
-                      <span class="ranking-col-title">Natural Landscape</span>
-                    </div>
-                    <div class="ranking-list" id="ranking-list-landscape">
-                      <p class="ranking-empty">No names yet.</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-          </div>
-        </div>
-      </section>
-
+      </div>
     </div>
   </main>
 
@@ -193,6 +145,6 @@
 
   <script src="/js/api.js?v=35"></script>
   <script src="/js/fx-ripple.js?v=35"></script>
-  <script src="/js/vote.js?v=38"></script>
+  <script src="/js/vote.js?v=40"></script>
 </body>
 </html>
